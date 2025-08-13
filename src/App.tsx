@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // ==========================================================
-// 1日のタスク管理ツール（ログイン・工数/実績/ステータス/メンバー）
-// v2.5 – Hooks順序修正（React#310対応）/ Vercel対応
-//  - 環境変数: import.meta.env.VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY
-//  - Insert時に id を送らず DB 自動採番（UUID）
-//  - setState アップデータの型注釈
-//  - Hooksは常に先頭で呼び、UIだけ return 内で分岐
+// 1日のタスク管理ツール（ログイン・工数/実績/ステータス/メンバー/振り返り）
+// v2.6.1 – 追加フォーム復活（addTask 未使用エラー対応）
+//  - 一覧はメンバーごとにグループ表示（行のメンバー列は廃止）
+//  - 「振り返り」列を追加（自分のタスクのみ編集可）
+//  - Hooksは常に先頭で呼ぶ（React #310 回避）
+//  - Supabase: retrospective を select/insert/update 対応
 // ==========================================================
 
 // ====== 環境変数（Vercel / Vite） ======
@@ -36,6 +36,7 @@ type Task = {
   createdAt: number; // epoch ms
   member: string; // 表示名
   ownerId?: string; // cloud の auth.user.id
+  retrospective?: string; // 振り返り
 };
 
 type LocalUser = { username: string };
@@ -116,6 +117,7 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     status: t.status,
     date: t.date,
     created_at: new Date(t.createdAt).toISOString(),
+    retrospective: t.retrospective ?? null,
   };
   const { error } = await supabase.from("tasks").insert(payload);
   if (error) throw error;
@@ -126,6 +128,7 @@ async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>
   if (patch.actualHours !== undefined) payload.actual_hours = patch.actualHours;
   if (patch.status !== undefined) payload.status = patch.status;
   if (patch.plannedHours !== undefined) payload.planned_hours = patch.plannedHours;
+  if (patch.retrospective !== undefined) payload.retrospective = patch.retrospective;
   const { error } = await supabase.from("tasks").update(payload).eq("id", id).eq("owner_id", ownerId);
   if (error) throw error;
 }
@@ -138,7 +141,7 @@ async function cloudFetchAll(): Promise<Task[]> {
   if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase
     .from("tasks")
-    .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at");
+    .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at, retrospective");
   if (error) throw error;
   return (data || []).map((r: any) => ({
     id: r.id,
@@ -151,13 +154,14 @@ async function cloudFetchAll(): Promise<Task[]> {
     status: r.status as Status,
     date: r.date,
     createdAt: new Date(r.created_at).getTime(),
+    retrospective: r.retrospective ?? "",
   }));
 }
 async function cloudFetchMine(ownerId: string): Promise<Task[]> {
   if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase
     .from("tasks")
-    .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at")
+    .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at, retrospective")
     .eq("owner_id", ownerId);
   if (error) throw error;
   return (data || []).map((r: any) => ({
@@ -171,6 +175,7 @@ async function cloudFetchMine(ownerId: string): Promise<Task[]> {
     status: r.status as Status,
     date: r.date,
     createdAt: new Date(r.created_at).getTime(),
+    retrospective: r.retrospective ?? "",
   }));
 }
 
@@ -249,7 +254,7 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
 
 // ====== App ======
 export default function App() {
-  // Hooksはここ（先頭）で“常に”呼ぶ
+  // Hooksは先頭で“常に”呼ぶ
   const [user, setUser] = useState<User | null>(null);
   const [date, setDate] = useState<string>(todayStr());
 
@@ -261,10 +266,7 @@ export default function App() {
   // データロード（userが決まった後に動く）
   useEffect(() => {
     (async () => {
-      if (!user) {
-        // 未ログイン時は何もしない（Hook自体は常に呼ばれるのでOK）
-        return;
-      }
+      if (!user) return;
       if (user.mode === "local") {
         setTasksMine(loadLocalTasks(user.local.username));
         setTasksAll(loadLocalAll());
@@ -284,23 +286,39 @@ export default function App() {
     setTasksAll(loadLocalAll());
   }, [tasksMine, user && user.mode === "local" ? user.local.username : null]);
 
+  // 表示対象の全タスク（自分/全員）
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
 
+  // メンバー一覧（フィルタ用）
   const members = useMemo(() => {
     const set = new Set<string>();
     for (const t of tasksAll) set.add(t.member || "-");
     return ["all", ...Array.from(set).sort()];
   }, [tasksAll]);
 
+  // メンバーでフィルタ（全員表示時のみ）
   const filteredByMember = useMemo(() => {
     if (viewMode !== "all" || memberFilter === "all") return sourceTasks;
     return sourceTasks.filter((t) => (t.member || "-") === memberFilter);
   }, [sourceTasks, viewMode, memberFilter]);
 
+  // 指定日のタスク
   const tasksForDay = useMemo(
-    () => filteredByMember.filter((t) => t.date === date).sort((a, b) => a.createdAt - b.createdAt),
+    () => filteredByMember.filter((t) => t.date === date),
     [filteredByMember, date]
   );
+
+  // メンバーごとにグループ化（表示順はメンバー名昇順）
+  const grouped = useMemo(() => {
+    const map = new Map<string, Task[]>();
+    for (const t of tasksForDay) {
+      const key = t.member || "-";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(t);
+    }
+    for (const arr of map.values()) arr.sort((a, b) => a.createdAt - b.createdAt);
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [tasksForDay]);
 
   const totals = useMemo(() => {
     const p = tasksForDay.reduce((acc, t) => acc + (Number.isFinite(t.plannedHours) ? t.plannedHours : 0), 0);
@@ -308,12 +326,14 @@ export default function App() {
     return { planned: p, actual: a };
   }, [tasksForDay]);
 
+  // 追加フォーム用 state
   const [newTask, setNewTask] = useState<Pick<Task, "name" | "category" | "plannedHours">>({
     name: "",
     category: CATEGORIES[0],
     plannedHours: 1,
   });
 
+  // 追加（フォームから呼ばれる）
   async function addTask() {
     if (!user) return;
     if (!newTask.name.trim()) return;
@@ -328,6 +348,7 @@ export default function App() {
       createdAt: Date.now(),
       member: user.mode === "local" ? user.local.username : user.cloud.displayName,
       ownerId: user.mode === "cloud" ? user.cloud.id : undefined,
+      retrospective: "", // 初期は空
     };
 
     if (user.mode === "local") {
@@ -346,6 +367,7 @@ export default function App() {
     setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
   }
 
+  // 更新・削除
   async function updateTask(id: string, patch: Partial<Task>, canEdit: boolean) {
     if (!canEdit) return;
     if (!user) return;
@@ -382,7 +404,7 @@ export default function App() {
     setUser(null);
   }
 
-  // ====== return の中だけで UI を分岐（Hooksの数は常に一定） ======
+  // 未ログインUI
   if (!user) {
     return isCloud() ? (
       <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />
@@ -390,6 +412,11 @@ export default function App() {
       <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />
     );
   }
+
+  // ====== 表示 ======
+  const myName = user.mode === "local" ? user.local.username : user.cloud.displayName;
+  const canEditTask = (t: Task) =>
+    user.mode === "local" ? t.member === myName : t.ownerId === user.cloud.id;
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
@@ -401,7 +428,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-gray-600">
-              {user.mode === "local" ? user.local.username : user.cloud.displayName}
+              {myName}
               {isCloud() ? "（クラウド）" : "（ローカル）"}
             </span>
             <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>
@@ -412,6 +439,7 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
+        {/* フィルタなど */}
         <div className="flex flex-col md:flex-row md:items-end gap-3 md:gap-4 mb-6">
           <div>
             <label className="block text-sm font-medium mb-1">対象日</label>
@@ -454,6 +482,7 @@ export default function App() {
                   actualHours: 0,
                   status: "未着手",
                   createdAt: Date.now(),
+                  retrospective: "", // リセット
                 }));
                 setTasksMine((prev: Task[]) => [...prev, ...clones]);
               } else {
@@ -471,8 +500,9 @@ export default function App() {
                       status: "未着手" as Status,
                       date,
                       createdAt: Date.now(),
-                      member: user.cloud.displayName,
+                      member: myName,
                       ownerId: user.cloud.id,
+                      retrospective: "", // リセット
                     };
                     await cloudInsertTask(clone as Omit<Task, "id">, user.cloud.id);
                   }
@@ -483,17 +513,15 @@ export default function App() {
                 })();
               }
             }}
-            title="前日タスクを複製（実績はリセット）"
+            title="前日タスクを複製（実績・振り返りはリセット）"
           >
             前日から複製
           </button>
         </div>
 
-        {/* 追加フォーム */}
+        {/* 追加フォーム（addTask を実際に使用） */}
         <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
-          <h2 className="text-base font-semibold mb-4">
-            タスクを追加（所有者: {user.mode === "local" ? user.local.username : user.cloud.displayName}）
-          </h2>
+          <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <div className="md:col-span-2">
               <label className="block text-sm font-medium mb-1">タスク名</label>
@@ -520,7 +548,17 @@ export default function App() {
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">工数（予定）</label>
-              <NumberWheel value={newTask.plannedHours} onChange={(plannedHours) => setNewTask((v) => ({ ...v, plannedHours }))} />
+              <select
+                className="w-full border rounded-xl px-3 py-2"
+                value={newTask.plannedHours}
+                onChange={(e) => setNewTask((v) => ({ ...v, plannedHours: parseFloat(e.target.value) }))}
+              >
+                {hoursOptions.map((h) => (
+                  <option key={h} value={h}>
+                    {h.toFixed(1)}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="flex items-end">
               <button className="w-full rounded-xl bg-black text-white py-2.5 font-medium hover:opacity-90" onClick={addTask}>
@@ -530,49 +568,127 @@ export default function App() {
           </div>
         </div>
 
-        {/* 一覧 */}
+        {/* 一覧（メンバーグルーピング） */}
         <div className="bg-white rounded-2xl shadow overflow-hidden">
           <div className="px-4 py-3 border-b flex items-center justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
             <div className="text-sm text-gray-600">合計: 予定 {totals.planned.toFixed(1)}h / 実績 {totals.actual.toFixed(1)}h</div>
           </div>
+
+          {/* テーブルヘッダ（メンバー列は廃止） */}
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-left border-b">
-                  <th className="p-2 whitespace-nowrap">メンバー</th>
                   <th className="p-2">タスク名</th>
                   <th className="p-2">カテゴリ</th>
                   <th className="p-2 w-32">工数(予定)</th>
                   <th className="p-2 w-28">実績</th>
                   <th className="p-2 w-32">ステータス</th>
+                  <th className="p-2">振り返り</th>
                   <th className="p-2 w-16 text-right">操作</th>
                 </tr>
               </thead>
+
               <tbody>
-                {tasksForDay.length === 0 ? (
+                {grouped.length === 0 ? (
                   <tr>
                     <td className="p-4 text-gray-500" colSpan={7}>
                       該当タスクがありません。
                     </td>
                   </tr>
                 ) : (
-                  tasksForDay.map((row) => (
-                    <TaskRow
-                      key={row.id}
-                      t={row}
-                      canEdit={user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id}
-                      onUpdate={(patch) =>
-                        updateTask(
-                          row.id,
-                          patch,
-                          user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id
-                        )
-                      }
-                      onDelete={() =>
-                        deleteTask(row.id, user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id)
-                      }
-                    />
+                  grouped.map(([member, rows]) => (
+                    <tbody key={`group-${member}`}>
+                      {/* メンバー見出し行 */}
+                      <tr className="bg-gray-100 border-b">
+                        <td className="p-2 font-semibold" colSpan={7}>
+                          👤 {member}
+                        </td>
+                      </tr>
+
+                      {/* 各タスク行 */}
+                      {rows.map((row) => {
+                        const canEdit = canEditTask(row);
+                        return (
+                          <tr key={row.id} className="border-b last:border-b-0">
+                            <td className="p-2 align-top">
+                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.name}</div>
+                            </td>
+                            <td className="p-2 align-top">
+                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.category}</div>
+                            </td>
+                            <td className="p-2 align-top w-32">
+                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{row.plannedHours.toFixed(1)}</div>
+                            </td>
+                            <td className="p-2 align-top w-28">
+                              {canEdit ? (
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.25}
+                                  className="w-full border rounded-lg px-2 py-1"
+                                  value={row.actualHours}
+                                  onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) }, true)}
+                                />
+                              ) : (
+                                <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">
+                                  {Number(row.actualHours || 0).toFixed(2)}
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-2 align-top w-32">
+                              {canEdit ? (
+                                <select
+                                  className="w-full border rounded-lg px-2 py-1"
+                                  value={row.status}
+                                  onChange={(e) => updateTask(row.id, { status: e.target.value as Status }, true)}
+                                >
+                                  {STATUS.map((s) => (
+                                    <option key={s} value={s}>
+                                      {s}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.status}</div>
+                              )}
+                            </td>
+
+                            {/* 振り返り */}
+                            <td className="p-2 align-top">
+                              {canEdit ? (
+                                <textarea
+                                  rows={2}
+                                  className="w-full border rounded-lg px-2 py-1"
+                                  placeholder="今日の気づき/改善点など"
+                                  value={row.retrospective ?? ""}
+                                  onChange={(e) => updateTask(row.id, { retrospective: e.target.value }, true)}
+                                />
+                              ) : (
+                                <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 whitespace-pre-wrap min-h-[2.5rem]">
+                                  {(row.retrospective ?? "").trim() || "—"}
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="p-2 align-top w-16 text-right">
+                              {canEdit ? (
+                                <button
+                                  className="text-red-600 hover:underline"
+                                  onClick={() => deleteTask(row.id, true)}
+                                  title="削除"
+                                >
+                                  削除
+                                </button>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
                   ))
                 )}
               </tbody>
@@ -580,129 +696,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* エクスポート/インポート（ローカルのみ） */}
-        {user.mode === "local" && (
-          <div className="mt-6 flex flex-col sm:flex-row gap-3">
-            <button
-              className="rounded-xl border px-3 py-2 hover:bg-white"
-              onClick={() => {
-                const blob = new Blob([JSON.stringify(tasksMine, null, 2)], { type: "application/json" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `${user.local.username}_tasks.json`;
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-            >
-              エクスポート(JSON)
-            </button>
-            <label className="inline-flex items-center gap-2 cursor-pointer">
-              <span className="rounded-xl border px-3 py-2 hover:bg-white">インポート(JSON)</span>
-              <input
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const text = await file.text();
-                  try {
-                    const parsed = JSON.parse(text) as Task[];
-                    if (!Array.isArray(parsed)) throw new Error("invalid");
-                    setTasksMine(parsed.map((t) => ({ ...t, member: user.local!.username })));
-                  } catch {
-                    alert("JSONが不正です");
-                  }
-                }}
-              />
-            </label>
-          </div>
-        )}
-
         <p className="text-xs text-gray-500 mt-6">
-          v2.5 – Hooks順序の修正で React#310 を解消。Supabase/RLS は用途に合わせて設定してください。
+          v2.6.1 – メンバーごとグループ化 + 振り返り列。追加フォームを復活し、addTask 未使用エラーを解消。
         </p>
       </main>
     </div>
-  );
-}
-
-// ====== 補助コンポーネント ======
-function NumberWheel({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return (
-    <select className="w-full border rounded-xl px-3 py-2 bg-white" value={value} onChange={(e) => onChange(parseFloat(e.target.value))}>
-      {hoursOptions.map((h) => (
-        <option key={h} value={h}>
-          {h.toFixed(1)}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function TaskRow({
-  t,
-  onUpdate,
-  onDelete,
-  canEdit,
-}: {
-  t: Task;
-  onUpdate: (patch: Partial<Task>) => void;
-  onDelete: () => void;
-  canEdit: boolean;
-}) {
-  return (
-    <tr className="border-b last:border-b-0">
-      <td className="p-2 align-top whitespace-nowrap">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.member || "-"}</div>
-      </td>
-      <td className="p-2 align-top">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.name}</div>
-      </td>
-      <td className="p-2 align-top">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.category}</div>
-      </td>
-      <td className="p-2 align-top w-32">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{t.plannedHours.toFixed(1)}</div>
-      </td>
-      <td className="p-2 align-top w-28">
-        {canEdit ? (
-          <input
-            type="number"
-            min={0}
-            step={0.25}
-            className="w-full border rounded-lg px-2 py-1"
-            value={t.actualHours}
-            onChange={(e) => onUpdate({ actualHours: Number(e.target.value) })}
-          />
-        ) : (
-          <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{Number(t.actualHours || 0).toFixed(2)}</div>
-        )}
-      </td>
-      <td className="p-2 align-top w-32">
-        {canEdit ? (
-          <select className="w-full border rounded-lg px-2 py-1" value={t.status} onChange={(e) => onUpdate({ status: e.target.value as Status })}>
-            {STATUS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.status}</div>
-        )}
-      </td>
-      <td className="p-2 align-top w-16 text-right">
-        {canEdit ? (
-          <button className="text-red-600 hover:underline" onClick={onDelete} title="削除">
-            削除
-          </button>
-        ) : (
-          <span className="text-gray-400">-</span>
-        )}
-      </td>
-    </tr>
   );
 }
 
