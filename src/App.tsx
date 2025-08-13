@@ -3,22 +3,14 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // ==========================================================
 // 1日のタスク管理ツール（ログイン・工数/実績/ステータス/メンバー/振り返り）
-// v2.6.1 – 追加フォーム復活（addTask 未使用エラー対応）
-//  - 一覧はメンバーごとにグループ表示（行のメンバー列は廃止）
-//  - 「振り返り」列を追加（自分のタスクのみ編集可）
-//  - Hooksは常に先頭で呼ぶ（React #310 回避）
-//  - Supabase: retrospective を select/insert/update 対応
+// v2.6.2 – 表示バグ修正：<tbody> ネスト禁止（追加しても見えない問題を解消）
 // ==========================================================
 
-// ====== 環境変数（Vercel / Vite） ======
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY: string = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY || "";
-
-// Supabaseが設定されているか
 const SUPABASE_READY = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const supabase: SupabaseClient | null = SUPABASE_READY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-// ====== 型・定数 ======
 const CATEGORIES = ["広告運用", "SEO", "新規営業", "AF", "その他"] as const;
 const STATUS = ["未着手", "仕掛中", "完了"] as const;
 
@@ -26,38 +18,32 @@ type Category = typeof CATEGORIES[number];
 type Status = typeof STATUS[number];
 
 type Task = {
-  id: string; // uuid or local id
+  id: string;
   name: string;
   category: Category;
   plannedHours: number;
   actualHours: number;
   status: Status;
-  date: string; // YYYY-MM-DD
-  createdAt: number; // epoch ms
-  member: string; // 表示名
-  ownerId?: string; // cloud の auth.user.id
-  retrospective?: string; // 振り返り
+  date: string;       // YYYY-MM-DD
+  createdAt: number;  // epoch ms
+  member: string;
+  ownerId?: string;
+  retrospective?: string;
 };
 
 type LocalUser = { username: string };
 type CloudUser = { id: string; email: string; displayName: string };
-
 type User =
   | { mode: "local"; local: LocalUser }
   | { mode: "cloud"; cloud: CloudUser };
 
-// ====== 共通ユーティリティ ======
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const hoursOptions = Array.from({ length: 25 }, (_, i) => i * 0.5);
 const isCloud = () => SUPABASE_READY;
-function uid() {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
-}
+const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
-// ====== Local Storage ======
-function storageKey(username: string) {
-  return `daily_tasks_v2__${username}`;
-}
+// ----- Local Storage -----
+const storageKey = (u: string) => `daily_tasks_v2__${u}`;
 function loadLocalTasks(username: string): Task[] {
   try {
     const raw = localStorage.getItem(storageKey(username));
@@ -65,9 +51,7 @@ function loadLocalTasks(username: string): Task[] {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
     return (arr as Task[]).map((t) => ({ ...t, member: (t as any).member || username }));
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 function loadLocalAll(): Task[] {
   const all: Task[] = [];
@@ -91,7 +75,7 @@ function saveLocalTasks(username: string, tasks: Task[]) {
   localStorage.setItem(storageKey(username), JSON.stringify(tasks));
 }
 
-// ====== Supabase ======
+// ----- Supabase -----
 async function cloudSignIn(email: string, password: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -104,7 +88,6 @@ async function cloudSignUp(email: string, password: string) {
   if (error) throw error;
   return data.user;
 }
-/** 重要：id は送らない（DBの default gen_random_uuid() に任せる） */
 async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const payload = {
@@ -179,7 +162,7 @@ async function cloudFetchMine(ownerId: string): Promise<Task[]> {
   }));
 }
 
-// ====== ログインUI ======
+// ----- ログインUI -----
 function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
@@ -234,7 +217,6 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
     </div>
   );
 }
-
 function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
   const [username, setUsername] = useState("");
   return (
@@ -252,18 +234,15 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
   );
 }
 
-// ====== App ======
+// ----- App -----
 export default function App() {
-  // Hooksは先頭で“常に”呼ぶ
   const [user, setUser] = useState<User | null>(null);
   const [date, setDate] = useState<string>(todayStr());
-
   const [tasksMine, setTasksMine] = useState<Task[]>([]);
   const [tasksAll, setTasksAll] = useState<Task[]>([]);
   const [viewMode, setViewMode] = useState<"mine" | "all">("mine");
   const [memberFilter, setMemberFilter] = useState<string>("all");
 
-  // データロード（userが決まった後に動く）
   useEffect(() => {
     (async () => {
       if (!user) return;
@@ -279,36 +258,30 @@ export default function App() {
     })();
   }, [user && (user.mode === "local" ? user.local.username : user.cloud.id)]);
 
-  // Local: 保存 & 全体再構築
   useEffect(() => {
     if (!user || user.mode !== "local") return;
     saveLocalTasks(user.local.username, tasksMine);
     setTasksAll(loadLocalAll());
   }, [tasksMine, user && user.mode === "local" ? user.local.username : null]);
 
-  // 表示対象の全タスク（自分/全員）
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
 
-  // メンバー一覧（フィルタ用）
   const members = useMemo(() => {
     const set = new Set<string>();
     for (const t of tasksAll) set.add(t.member || "-");
     return ["all", ...Array.from(set).sort()];
   }, [tasksAll]);
 
-  // メンバーでフィルタ（全員表示時のみ）
   const filteredByMember = useMemo(() => {
     if (viewMode !== "all" || memberFilter === "all") return sourceTasks;
     return sourceTasks.filter((t) => (t.member || "-") === memberFilter);
   }, [sourceTasks, viewMode, memberFilter]);
 
-  // 指定日のタスク
   const tasksForDay = useMemo(
     () => filteredByMember.filter((t) => t.date === date),
     [filteredByMember, date]
   );
 
-  // メンバーごとにグループ化（表示順はメンバー名昇順）
   const grouped = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const t of tasksForDay) {
@@ -326,14 +299,12 @@ export default function App() {
     return { planned: p, actual: a };
   }, [tasksForDay]);
 
-  // 追加フォーム用 state
   const [newTask, setNewTask] = useState<Pick<Task, "name" | "category" | "plannedHours">>({
     name: "",
     category: CATEGORIES[0],
     plannedHours: 1,
   });
 
-  // 追加（フォームから呼ばれる）
   async function addTask() {
     if (!user) return;
     if (!newTask.name.trim()) return;
@@ -348,7 +319,7 @@ export default function App() {
       createdAt: Date.now(),
       member: user.mode === "local" ? user.local.username : user.cloud.displayName,
       ownerId: user.mode === "cloud" ? user.cloud.id : undefined,
-      retrospective: "", // 初期は空
+      retrospective: "",
     };
 
     if (user.mode === "local") {
@@ -357,8 +328,6 @@ export default function App() {
       setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
       return;
     }
-
-    // cloud（idは送らない）
     await cloudInsertTask(base as Omit<Task, "id">, user.cloud.id);
     const mine = await cloudFetchMine(user.cloud.id);
     const all = await cloudFetchAll();
@@ -367,16 +336,13 @@ export default function App() {
     setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
   }
 
-  // 更新・削除
   async function updateTask(id: string, patch: Partial<Task>, canEdit: boolean) {
     if (!canEdit) return;
     if (!user) return;
-
     if (user.mode === "local") {
       setTasksMine((prev: Task[]) => prev.map((t) => (t.id === id ? ({ ...t, ...patch } as Task) : t)));
       return;
     }
-
     await cloudUpdateTask(id, user.cloud.id, patch);
     const mine = await cloudFetchMine(user.cloud.id);
     const all = await cloudFetchAll();
@@ -387,12 +353,10 @@ export default function App() {
   async function deleteTask(id: string, canEdit: boolean) {
     if (!canEdit) return;
     if (!user) return;
-
     if (user.mode === "local") {
       setTasksMine((prev: Task[]) => prev.filter((t) => t.id !== id));
       return;
     }
-
     await cloudDeleteTask(id, user.cloud.id);
     const mine = await cloudFetchMine(user.cloud.id);
     const all = await cloudFetchAll();
@@ -404,19 +368,14 @@ export default function App() {
     setUser(null);
   }
 
-  // 未ログインUI
   if (!user) {
-    return isCloud() ? (
-      <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />
-    ) : (
-      <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />
-    );
+    return isCloud()
+      ? <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />
+      : <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />;
   }
 
-  // ====== 表示 ======
   const myName = user.mode === "local" ? user.local.username : user.cloud.displayName;
-  const canEditTask = (t: Task) =>
-    user.mode === "local" ? t.member === myName : t.ownerId === user.cloud.id;
+  const canEditTask = (t: Task) => (user.mode === "local" ? t.member === myName : t.ownerId === user.cloud.id);
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
@@ -428,18 +387,15 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-gray-600">
-              {myName}
-              {isCloud() ? "（クラウド）" : "（ローカル）"}
+              {myName}{isCloud() ? "（クラウド）" : "（ローカル）"}
             </span>
-            <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>
-              ログアウト
-            </button>
+            <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>ログアウト</button>
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* フィルタなど */}
+        {/* フィルタ・操作 */}
         <div className="flex flex-col md:flex-row md:items-end gap-3 md:gap-4 mb-6">
           <div>
             <label className="block text-sm font-medium mb-1">対象日</label>
@@ -457,9 +413,7 @@ export default function App() {
               <label className="block text-sm font-medium mb-1">メンバー</label>
               <select className="border rounded-xl px-3 py-2 bg-white" value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
                 {members.map((m) => (
-                  <option key={m} value={m}>
-                    {m === "all" ? "すべて" : m}
-                  </option>
+                  <option key={m} value={m}>{m === "all" ? "すべて" : m}</option>
                 ))}
               </select>
             </div>
@@ -467,59 +421,39 @@ export default function App() {
           <div className="flex-1" />
           <button
             className="rounded-xl border px-3 py-2 hover:bg-white"
+            title="前日タスクを複製（実績・振り返りはリセット）"
             onClick={() => {
-              // 前日から複製（自分のタスクのみ）
               if (user.mode === "local") {
-                const dt = new Date(date);
-                dt.setDate(dt.getDate() - 1);
+                const dt = new Date(date); dt.setDate(dt.getDate() - 1);
                 const y = dt.toISOString().slice(0, 10);
                 const yTasks = tasksMine.filter((t) => t.date === y);
                 if (!yTasks.length) return;
                 const clones: Task[] = yTasks.map((t) => ({
-                  ...t,
-                  id: uid(),
-                  date,
-                  actualHours: 0,
-                  status: "未着手",
-                  createdAt: Date.now(),
-                  retrospective: "", // リセット
+                  ...t, id: uid(), date, actualHours: 0, status: "未着手", createdAt: Date.now(), retrospective: ""
                 }));
                 setTasksMine((prev: Task[]) => [...prev, ...clones]);
               } else {
                 (async () => {
-                  const dt = new Date(date);
-                  dt.setDate(dt.getDate() - 1);
+                  const dt = new Date(date); dt.setDate(dt.getDate() - 1);
                   const y = dt.toISOString().slice(0, 10);
                   const yTasks = tasksMine.filter((t) => t.date === y);
                   for (const t of yTasks) {
-                    const clone = {
-                      name: t.name,
-                      category: t.category,
-                      plannedHours: t.plannedHours,
-                      actualHours: 0,
-                      status: "未着手" as Status,
-                      date,
-                      createdAt: Date.now(),
-                      member: myName,
-                      ownerId: user.cloud.id,
-                      retrospective: "", // リセット
-                    };
-                    await cloudInsertTask(clone as Omit<Task, "id">, user.cloud.id);
+                    await cloudInsertTask({
+                      name: t.name, category: t.category, plannedHours: t.plannedHours,
+                      actualHours: 0, status: "未着手", date, createdAt: Date.now(),
+                      member: myName, ownerId: user.cloud.id, retrospective: ""
+                    } as Omit<Task, "id">, user.cloud.id);
                   }
                   const mine = await cloudFetchMine(user.cloud.id);
                   const all = await cloudFetchAll();
-                  setTasksMine(mine);
-                  setTasksAll(all);
+                  setTasksMine(mine); setTasksAll(all);
                 })();
               }
             }}
-            title="前日タスクを複製（実績・振り返りはリセット）"
-          >
-            前日から複製
-          </button>
+          >前日から複製</button>
         </div>
 
-        {/* 追加フォーム（addTask を実際に使用） */}
+        {/* 追加フォーム */}
         <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -539,11 +473,7 @@ export default function App() {
                 value={newTask.category}
                 onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
               >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
+                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div>
@@ -553,11 +483,7 @@ export default function App() {
                 value={newTask.plannedHours}
                 onChange={(e) => setNewTask((v) => ({ ...v, plannedHours: parseFloat(e.target.value) }))}
               >
-                {hoursOptions.map((h) => (
-                  <option key={h} value={h}>
-                    {h.toFixed(1)}
-                  </option>
-                ))}
+                {hoursOptions.map((h) => <option key={h} value={h}>{h.toFixed(1)}</option>)}
               </select>
             </div>
             <div className="flex items-end">
@@ -568,14 +494,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* 一覧（メンバーグルーピング） */}
+        {/* 一覧（メンバーグループ。tbodyは一つに統一！） */}
         <div className="bg-white rounded-2xl shadow overflow-hidden">
           <div className="px-4 py-3 border-b flex items-center justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
             <div className="text-sm text-gray-600">合計: 予定 {totals.planned.toFixed(1)}h / 実績 {totals.actual.toFixed(1)}h</div>
           </div>
 
-          {/* テーブルヘッダ（メンバー列は廃止） */}
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
@@ -590,24 +515,19 @@ export default function App() {
                 </tr>
               </thead>
 
+              {/* ここが修正点：tbody は 1つだけ。中でフラグメントを使って行を並べる */}
               <tbody>
                 {grouped.length === 0 ? (
-                  <tr>
-                    <td className="p-4 text-gray-500" colSpan={7}>
-                      該当タスクがありません。
-                    </td>
-                  </tr>
+                  <tr><td className="p-4 text-gray-500" colSpan={7}>該当タスクがありません。</td></tr>
                 ) : (
                   grouped.map(([member, rows]) => (
-                    <tbody key={`group-${member}`}>
+                    <>
                       {/* メンバー見出し行 */}
-                      <tr className="bg-gray-100 border-b">
-                        <td className="p-2 font-semibold" colSpan={7}>
-                          👤 {member}
-                        </td>
+                      <tr key={`header-${member}`} className="bg-gray-100 border-b">
+                        <td className="p-2 font-semibold" colSpan={7}>👤 {member}</td>
                       </tr>
 
-                      {/* 各タスク行 */}
+                      {/* タスク行 */}
                       {rows.map((row) => {
                         const canEdit = canEditTask(row);
                         return (
@@ -624,9 +544,7 @@ export default function App() {
                             <td className="p-2 align-top w-28">
                               {canEdit ? (
                                 <input
-                                  type="number"
-                                  min={0}
-                                  step={0.25}
+                                  type="number" min={0} step={0.25}
                                   className="w-full border rounded-lg px-2 py-1"
                                   value={row.actualHours}
                                   onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) }, true)}
@@ -644,18 +562,12 @@ export default function App() {
                                   value={row.status}
                                   onChange={(e) => updateTask(row.id, { status: e.target.value as Status }, true)}
                                 >
-                                  {STATUS.map((s) => (
-                                    <option key={s} value={s}>
-                                      {s}
-                                    </option>
-                                  ))}
+                                  {STATUS.map((s) => <option key={s} value={s}>{s}</option>)}
                                 </select>
                               ) : (
                                 <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.status}</div>
                               )}
                             </td>
-
-                            {/* 振り返り */}
                             <td className="p-2 align-top">
                               {canEdit ? (
                                 <textarea
@@ -671,14 +583,9 @@ export default function App() {
                                 </div>
                               )}
                             </td>
-
                             <td className="p-2 align-top w-16 text-right">
                               {canEdit ? (
-                                <button
-                                  className="text-red-600 hover:underline"
-                                  onClick={() => deleteTask(row.id, true)}
-                                  title="削除"
-                                >
+                                <button className="text-red-600 hover:underline" onClick={() => deleteTask(row.id, true)} title="削除">
                                   削除
                                 </button>
                               ) : (
@@ -688,7 +595,7 @@ export default function App() {
                           </tr>
                         );
                       })}
-                    </tbody>
+                    </>
                   ))
                 )}
               </tbody>
@@ -697,14 +604,14 @@ export default function App() {
         </div>
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.6.1 – メンバーごとグループ化 + 振り返り列。追加フォームを復活し、addTask 未使用エラーを解消。
+          v2.6.2 – テーブル構造を修正（tbodyを一つに統一）。追加したタスクが即座に表示されます。
         </p>
       </main>
     </div>
   );
 }
 
-// ====== Self test ======
+// ----- Self test -----
 (function selfTest() {
   try {
     console.assert(hoursOptions.length === 25, "hoursOptions length");
