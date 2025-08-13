@@ -3,10 +3,11 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // ==========================================================
 // 1日のタスク管理ツール（ログイン・工数/実績/ステータス/メンバー）
-// v2.4 – Vercel向け修正
+// v2.5 – Hooks順序修正（React#310対応）/ Vercel対応
 //  - 環境変数: import.meta.env.VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY
 //  - Insert時に id を送らず DB 自動採番（UUID）
 //  - setState アップデータの型注釈
+//  - Hooksは常に先頭で呼び、UIだけ return 内で分岐
 // ==========================================================
 
 // ====== 環境変数（Vercel / Vite） ======
@@ -15,9 +16,7 @@ const SUPABASE_ANON_KEY: string = (import.meta as any)?.env?.VITE_SUPABASE_ANON_
 
 // Supabaseが設定されているか
 const SUPABASE_READY = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-const supabase: SupabaseClient | null = SUPABASE_READY
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-  : null;
+const supabase: SupabaseClient | null = SUPABASE_READY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 // ====== 型・定数 ======
 const CATEGORIES = ["広告運用", "SEO", "新規営業", "AF", "その他"] as const;
@@ -175,7 +174,7 @@ async function cloudFetchMine(ownerId: string): Promise<Task[]> {
   }));
 }
 
-// ====== UI ======
+// ====== ログインUI ======
 function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
@@ -248,85 +247,9 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
   );
 }
 
-function NumberWheel({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return (
-    <select className="w-full border rounded-xl px-3 py-2 bg-white" value={value} onChange={(e) => onChange(parseFloat(e.target.value))}>
-      {hoursOptions.map((h) => (
-        <option key={h} value={h}>
-          {h.toFixed(1)}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function TaskRow({
-  t,
-  onUpdate,
-  onDelete,
-  canEdit,
-}: {
-  t: Task;
-  onUpdate: (patch: Partial<Task>) => void;
-  onDelete: () => void;
-  canEdit: boolean;
-}) {
-  return (
-    <tr className="border-b last:border-b-0">
-      <td className="p-2 align-top whitespace-nowrap">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.member || "-"}</div>
-      </td>
-      <td className="p-2 align-top">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.name}</div>
-      </td>
-      <td className="p-2 align-top">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.category}</div>
-      </td>
-      <td className="p-2 align-top w-32">
-        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{t.plannedHours.toFixed(1)}</div>
-      </td>
-      <td className="p-2 align-top w-28">
-        {canEdit ? (
-          <input
-            type="number"
-            min={0}
-            step={0.25}
-            className="w-full border rounded-lg px-2 py-1"
-            value={t.actualHours}
-            onChange={(e) => onUpdate({ actualHours: Number(e.target.value) })}
-          />
-        ) : (
-          <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{Number(t.actualHours || 0).toFixed(2)}</div>
-        )}
-      </td>
-      <td className="p-2 align-top w-32">
-        {canEdit ? (
-          <select className="w-full border rounded-lg px-2 py-1" value={t.status} onChange={(e) => onUpdate({ status: e.target.value as Status })}>
-            {STATUS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.status}</div>
-        )}
-      </td>
-      <td className="p-2 align-top w-16 text-right">
-        {canEdit ? (
-          <button className="text-red-600 hover:underline" onClick={onDelete} title="削除">
-            削除
-          </button>
-        ) : (
-          <span className="text-gray-400">-</span>
-        )}
-      </td>
-    </tr>
-  );
-}
-
 // ====== App ======
 export default function App() {
+  // Hooksはここ（先頭）で“常に”呼ぶ
   const [user, setUser] = useState<User | null>(null);
   const [date, setDate] = useState<string>(todayStr());
 
@@ -335,18 +258,13 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"mine" | "all">("mine");
   const [memberFilter, setMemberFilter] = useState<string>("all");
 
-  // 初期ログイン画面
-  if (!user) {
-    if (isCloud()) {
-      return <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />;
-    }
-    return <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />;
-  }
-
-  // ロード
+  // データロード（userが決まった後に動く）
   useEffect(() => {
     (async () => {
-      if (!user) return;
+      if (!user) {
+        // 未ログイン時は何もしない（Hook自体は常に呼ばれるのでOK）
+        return;
+      }
       if (user.mode === "local") {
         setTasksMine(loadLocalTasks(user.local.username));
         setTasksAll(loadLocalAll());
@@ -462,6 +380,15 @@ export default function App() {
 
   function logout() {
     setUser(null);
+  }
+
+  // ====== return の中だけで UI を分岐（Hooksの数は常に一定） ======
+  if (!user) {
+    return isCloud() ? (
+      <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />
+    ) : (
+      <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />
+    );
   }
 
   return (
@@ -694,10 +621,88 @@ export default function App() {
         )}
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.4 – Vercel環境向けに環境変数/型/UUID採番を修正。Supabase RLS は用途に合わせて設定してください。
+          v2.5 – Hooks順序の修正で React#310 を解消。Supabase/RLS は用途に合わせて設定してください。
         </p>
       </main>
     </div>
+  );
+}
+
+// ====== 補助コンポーネント ======
+function NumberWheel({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <select className="w-full border rounded-xl px-3 py-2 bg-white" value={value} onChange={(e) => onChange(parseFloat(e.target.value))}>
+      {hoursOptions.map((h) => (
+        <option key={h} value={h}>
+          {h.toFixed(1)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function TaskRow({
+  t,
+  onUpdate,
+  onDelete,
+  canEdit,
+}: {
+  t: Task;
+  onUpdate: (patch: Partial<Task>) => void;
+  onDelete: () => void;
+  canEdit: boolean;
+}) {
+  return (
+    <tr className="border-b last:border-b-0">
+      <td className="p-2 align-top whitespace-nowrap">
+        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.member || "-"}</div>
+      </td>
+      <td className="p-2 align-top">
+        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.name}</div>
+      </td>
+      <td className="p-2 align-top">
+        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.category}</div>
+      </td>
+      <td className="p-2 align-top w-32">
+        <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{t.plannedHours.toFixed(1)}</div>
+      </td>
+      <td className="p-2 align-top w-28">
+        {canEdit ? (
+          <input
+            type="number"
+            min={0}
+            step={0.25}
+            className="w-full border rounded-lg px-2 py-1"
+            value={t.actualHours}
+            onChange={(e) => onUpdate({ actualHours: Number(e.target.value) })}
+          />
+        ) : (
+          <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{Number(t.actualHours || 0).toFixed(2)}</div>
+        )}
+      </td>
+      <td className="p-2 align-top w-32">
+        {canEdit ? (
+          <select className="w-full border rounded-lg px-2 py-1" value={t.status} onChange={(e) => onUpdate({ status: e.target.value as Status })}>
+            {STATUS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{t.status}</div>
+        )}
+      </td>
+      <td className="p-2 align-top w-16 text-right">
+        {canEdit ? (
+          <button className="text-red-600 hover:underline" onClick={onDelete} title="削除">
+            削除
+          </button>
+        ) : (
+          <span className="text-gray-400">-</span>
+        )}
+      </td>
+    </tr>
   );
 }
 

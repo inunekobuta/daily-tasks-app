@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import "./index.css"; // ← これが存在しないと TS2307 で落ちる
+import "./index.css"; // ← 存在必須（TS2307対策）
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
