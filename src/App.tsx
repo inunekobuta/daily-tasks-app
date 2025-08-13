@@ -1,39 +1,25 @@
-// src/App.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-/**
- * ==========================================================
- * 1日のタスク管理ツール
- * v2.3 – Supabase insert 400対策（idはDBに自動採番させる）
- *      – 失敗時のエラーメッセージ強化
- *      – Hooks順序安定（v2.2継承）
- * ==========================================================
- */
+// ==========================================================
+// 1日のタスク管理ツール（ログイン・工数/実績/ステータス/メンバー）
+// v2.4 – Vercel向け修正
+//  - 環境変数: import.meta.env.VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY
+//  - Insert時に id を送らず DB 自動採番（UUID）
+//  - setState アップデータの型注釈
+// ==========================================================
 
-/* ====== 環境変数読み込み（Vite/Next/CRA 横断） ====== */
-const fromVite = (typeof import.meta !== "undefined" && (import.meta as any).env) || {};
-const SUPABASE_URL =
-  (fromVite.VITE_SUPABASE_URL as string) ||
-  (process.env?.NEXT_PUBLIC_SUPABASE_URL as string) ||
-  (process.env?.REACT_APP_SUPABASE_URL as string) ||
-  "";
-const SUPABASE_ANON_KEY =
-  (fromVite.VITE_SUPABASE_ANON_KEY as string) ||
-  (process.env?.NEXT_PUBLIC_SUPABASE_ANON_KEY as string) ||
-  (process.env?.REACT_APP_SUPABASE_ANON_KEY as string) ||
-  "";
-export const SUPABASE_READY = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-export const supabase = SUPABASE_READY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+// ====== 環境変数（Vercel / Vite） ======
+const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY: string = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY || "";
 
-if (!SUPABASE_READY) {
-  console.warn(
-    "[Supabase] URL/ANON_KEY 未設定。Vite=VITE_ / Next=NEXT_PUBLIC_ / CRA=REACT_APP_ を使用してください。",
-    { SUPABASE_URL, hasKey: Boolean(SUPABASE_ANON_KEY) }
-  );
-}
+// Supabaseが設定されているか
+const SUPABASE_READY = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const supabase: SupabaseClient | null = SUPABASE_READY
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
-/* ====== 型・定数 ====== */
+// ====== 型・定数 ======
 const CATEGORIES = ["広告運用", "SEO", "新規営業", "AF", "その他"] as const;
 const STATUS = ["未着手", "仕掛中", "完了"] as const;
 
@@ -41,16 +27,16 @@ type Category = typeof CATEGORIES[number];
 type Status = typeof STATUS[number];
 
 type Task = {
-  id: string;            // uuid（クラウド）/ ランダム文字列（ローカル）
+  id: string; // uuid or local id
   name: string;
   category: Category;
   plannedHours: number;
   actualHours: number;
   status: Status;
-  date: string;          // YYYY-MM-DD
-  createdAt: number;     // epoch ms
-  member: string;        // 表示名
-  ownerId?: string;      // クラウド時のauthユーザーID
+  date: string; // YYYY-MM-DD
+  createdAt: number; // epoch ms
+  member: string; // 表示名
+  ownerId?: string; // cloud の auth.user.id
 };
 
 type LocalUser = { username: string };
@@ -60,7 +46,7 @@ type User =
   | { mode: "local"; local: LocalUser }
   | { mode: "cloud"; cloud: CloudUser };
 
-/* ====== 共通 ====== */
+// ====== 共通ユーティリティ ======
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const hoursOptions = Array.from({ length: 25 }, (_, i) => i * 0.5);
 const isCloud = () => SUPABASE_READY;
@@ -68,7 +54,7 @@ function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 }
 
-/* ====== Local Provider ====== */
+// ====== Local Storage ======
 function storageKey(username: string) {
   return `daily_tasks_v2__${username}`;
 }
@@ -105,23 +91,22 @@ function saveLocalTasks(username: string, tasks: Task[]) {
   localStorage.setItem(storageKey(username), JSON.stringify(tasks));
 }
 
-/* ====== Cloud Provider (Supabase) ====== */
-/** tasks テーブル想定
-  id uuid pk default gen_random_uuid()
-  owner_id uuid not null
-  member text not null
-  name text not null
-  category text not null
-  planned_hours numeric not null default 0
-  actual_hours numeric not null default 0
-  status text not null
-  date text not null
-  created_at timestamptz not null default now()
-*/
-
-/** 変更点：id は送らない。DB の default gen_random_uuid() に任せる。 */
+// ====== Supabase ======
+async function cloudSignIn(email: string, password: string) {
+  if (!supabase) throw new Error("Supabase未設定");
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data.user;
+}
+async function cloudSignUp(email: string, password: string) {
+  if (!supabase) throw new Error("Supabase未設定");
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) throw error;
+  return data.user;
+}
+/** 重要：id は送らない（DBの default gen_random_uuid() に任せる） */
 async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
-  if (!supabase) throw new Error("Supabase未初期化");
+  if (!supabase) throw new Error("Supabase未設定");
   const payload = {
     owner_id: ownerId,
     member: t.member,
@@ -133,47 +118,25 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     date: t.date,
     created_at: new Date(t.createdAt).toISOString(),
   };
-  const { data, error } = await supabase
-    .from("tasks")
-    .insert(payload)
-    .select("id")     // 生成された uuid を受け取る
-    .single();
-
-  if (error) {
-    console.error("Insert failed:", error);
-    // Supabase の error は message / details / hint を持つ
-    const msg = [error.message, error.details, error.hint].filter(Boolean).join(" / ");
-    throw new Error(msg || "Insert error");
-  }
-  return data?.id as string | undefined;
+  const { error } = await supabase.from("tasks").insert(payload);
+  if (error) throw error;
 }
-
 async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>) {
-  if (!supabase) throw new Error("Supabase未初期化");
+  if (!supabase) throw new Error("Supabase未設定");
   const payload: any = {};
   if (patch.actualHours !== undefined) payload.actual_hours = patch.actualHours;
   if (patch.status !== undefined) payload.status = patch.status;
   if (patch.plannedHours !== undefined) payload.planned_hours = patch.plannedHours;
   const { error } = await supabase.from("tasks").update(payload).eq("id", id).eq("owner_id", ownerId);
-  if (error) {
-    console.error("Update failed:", error);
-    const msg = [error.message, (error as any).details, (error as any).hint].filter(Boolean).join(" / ");
-    throw new Error(msg || "Update error");
-  }
+  if (error) throw error;
 }
-
 async function cloudDeleteTask(id: string, ownerId: string) {
-  if (!supabase) throw new Error("Supabase未初期化");
+  if (!supabase) throw new Error("Supabase未設定");
   const { error } = await supabase.from("tasks").delete().eq("id", id).eq("owner_id", ownerId);
-  if (error) {
-    console.error("Delete failed:", error);
-    const msg = [error.message, (error as any).details, (error as any).hint].filter(Boolean).join(" / ");
-    throw new Error(msg || "Delete error");
-  }
+  if (error) throw error;
 }
-
 async function cloudFetchAll(): Promise<Task[]> {
-  if (!supabase) throw new Error("Supabase未初期化");
+  if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase
     .from("tasks")
     .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at");
@@ -191,9 +154,8 @@ async function cloudFetchAll(): Promise<Task[]> {
     createdAt: new Date(r.created_at).getTime(),
   }));
 }
-
 async function cloudFetchMine(ownerId: string): Promise<Task[]> {
-  if (!supabase) throw new Error("Supabase未初期化");
+  if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase
     .from("tasks")
     .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at")
@@ -213,7 +175,7 @@ async function cloudFetchMine(ownerId: string): Promise<Task[]> {
   }));
 }
 
-/* ====== ログインUI ====== */
+// ====== UI ======
 function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
@@ -226,48 +188,12 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
     try {
       setLoading(true);
       setError(null);
-
-      if (!SUPABASE_READY || !supabase) throw new Error("Supabase の URL / Key が未設定です。");
-      const emailNorm = (email || "").trim().toLowerCase();
-      const passNorm = (password || "").trim();
-      if (!emailNorm || !passNorm) throw new Error("メール/パスワードを入力してください");
-
-      if (isSignup) {
-        const { data: su, error: se } = await supabase.auth.signUp({
-          email: emailNorm,
-          password: passNorm,
-          options: { emailRedirectTo: window.location.origin },
-        });
-        if (se) {
-          const { data: si, error: sie } = await supabase.auth.signInWithPassword({ email: emailNorm, password: passNorm });
-          if (sie) throw sie;
-          const u = si.user;
-          if (!u) throw new Error("ログインに失敗しました");
-          onLoggedIn({ id: u.id, email: u.email || emailNorm, displayName: displayName || emailNorm.split("@")[0] });
-          return;
-        }
-        const sessionCheck = await supabase.auth.getSession();
-        if (!sessionCheck.data.session) {
-          await supabase.auth.signInWithPassword({ email: emailNorm, password: passNorm });
-        }
-        const u = (await supabase.auth.getUser()).data.user;
-        if (!u) throw new Error("ユーザー取得に失敗しました");
-        onLoggedIn({ id: u.id, email: u.email || emailNorm, displayName: displayName || emailNorm.split("@")[0] });
-      } else {
-        const { data: si, error: sie } = await supabase.auth.signInWithPassword({ email: emailNorm, password: passNorm });
-        if (sie) {
-          if (/invalid login credentials/i.test(sie.message)) {
-            throw new Error("メールかパスワードが違います。必要なら『パスワード再設定』を実行してください。");
-          }
-          throw sie;
-        }
-        const u = si.user;
-        if (!u) throw new Error("ログインに失敗しました");
-        onLoggedIn({ id: u.id, email: u.email || emailNorm, displayName: displayName || emailNorm.split("@")[0] });
-      }
+      if (!SUPABASE_READY) throw new Error("SupabaseのURL/AnonKeyが未設定です。");
+      const u = isSignup ? await cloudSignUp(email, password) : await cloudSignIn(email, password);
+      if (!u) throw new Error("Auth failed");
+      onLoggedIn({ id: u.id, email: u.email || email, displayName: displayName || email.split("@")[0] });
     } catch (e: any) {
-      console.error(e);
-      setError(e?.message || String(e));
+      setError(e.message || String(e));
     } finally {
       setLoading(false);
     }
@@ -291,36 +217,14 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
             <label className="block text-sm font-medium mb-1">表示名（メンバー名）</label>
             <input className="w-full border rounded-xl px-3 py-2" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="例: yamada" />
           </div>
-
           {error && <div className="text-red-600 text-sm">{error}</div>}
-
           <button className="rounded-xl bg-black text-white py-2.5 font-medium hover:opacity-90" onClick={submit} disabled={loading}>
             {loading ? "処理中..." : isSignup ? "サインアップ" : "ログイン"}
           </button>
-
           <button className="text-sm text-gray-600 hover:text-black" onClick={() => setIsSignup((v) => !v)}>
             {isSignup ? "既にアカウントがあります" : "初めての方はこちら（サインアップ）"}
           </button>
-
-          <button
-            type="button"
-            className="text-sm underline text-gray-600 hover:text-black"
-            onClick={async () => {
-              try {
-                if (!SUPABASE_READY || !supabase) throw new Error("Supabase未設定");
-                const emailNorm = (email || "").trim().toLowerCase();
-                if (!emailNorm) throw new Error("メールを入力してください");
-                await supabase.auth.resetPasswordForEmail(emailNorm, { redirectTo: window.location.origin });
-                setError("パスワード再設定リンクを送信しました。メールを確認してください。");
-              } catch (e: any) {
-                setError(e?.message || String(e));
-              }
-            }}
-          >
-            パスワードを忘れた？
-          </button>
-
-          {!SUPABASE_READY && <p className="text-xs text-orange-600">※ .env に URL / ANON_KEY を設定し、開発サーバを再起動してください。</p>}
+          {!SUPABASE_READY && <p className="text-xs text-orange-600">※ Vercelの環境変数に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください</p>}
         </div>
       </div>
     </div>
@@ -344,7 +248,6 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
   );
 }
 
-/* ====== 小パーツ ====== */
 function NumberWheel({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <select className="w-full border rounded-xl px-3 py-2 bg-white" value={value} onChange={(e) => onChange(parseFloat(e.target.value))}>
@@ -422,16 +325,28 @@ function TaskRow({
   );
 }
 
-/* ====== 認証後の本体 ====== */
-function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
+// ====== App ======
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
   const [date, setDate] = useState<string>(todayStr());
+
   const [tasksMine, setTasksMine] = useState<Task[]>([]);
   const [tasksAll, setTasksAll] = useState<Task[]>([]);
   const [viewMode, setViewMode] = useState<"mine" | "all">("mine");
   const [memberFilter, setMemberFilter] = useState<string>("all");
 
+  // 初期ログイン画面
+  if (!user) {
+    if (isCloud()) {
+      return <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />;
+    }
+    return <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />;
+  }
+
+  // ロード
   useEffect(() => {
     (async () => {
+      if (!user) return;
       if (user.mode === "local") {
         setTasksMine(loadLocalTasks(user.local.username));
         setTasksAll(loadLocalAll());
@@ -442,13 +357,14 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
         setTasksAll(all);
       }
     })();
-  }, [user.mode === "local" ? user.local.username : user.cloud.id]);
+  }, [user && (user.mode === "local" ? user.local.username : user.cloud.id)]);
 
+  // Local: 保存 & 全体再構築
   useEffect(() => {
-    if (user.mode !== "local") return;
+    if (!user || user.mode !== "local") return;
     saveLocalTasks(user.local.username, tasksMine);
     setTasksAll(loadLocalAll());
-  }, [tasksMine, user.mode === "local" ? user.local.username : null]);
+  }, [tasksMine, user && user.mode === "local" ? user.local.username : null]);
 
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
 
@@ -481,9 +397,9 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
   });
 
   async function addTask() {
+    if (!user) return;
     if (!newTask.name.trim()) return;
 
-    // ローカル用は id を自前で持つ。クラウド時はサーバ側で採番。
     const base = {
       name: newTask.name.trim(),
       category: newTask.category,
@@ -496,55 +412,56 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
       ownerId: user.mode === "cloud" ? user.cloud.id : undefined,
     };
 
-    try {
-      if (user.mode === "local") {
-        const withId: Task = { id: uid(), ...base };
-        setTasksMine((prev) => [...prev, withId]);
-      } else {
-        await cloudInsertTask(base as Omit<Task, "id">, user.cloud.id); // ← id は送らない
-        const [mine, all] = await Promise.all([cloudFetchMine(user.cloud.id), cloudFetchAll()]);
-        setTasksMine(mine);
-        setTasksAll(all);
-      }
+    if (user.mode === "local") {
+      const withId: Task = { id: uid(), ...base };
+      setTasksMine((prev: Task[]) => [...prev, withId]);
       setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
-    } catch (e: any) {
-      console.error(e);
-      alert(`タスク追加に失敗しました: ${e?.message || String(e)}`);
+      return;
     }
+
+    // cloud（idは送らない）
+    await cloudInsertTask(base as Omit<Task, "id">, user.cloud.id);
+    const mine = await cloudFetchMine(user.cloud.id);
+    const all = await cloudFetchAll();
+    setTasksMine(mine);
+    setTasksAll(all);
+    setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
   }
 
   async function updateTask(id: string, patch: Partial<Task>, canEdit: boolean) {
     if (!canEdit) return;
-    try {
-      if (user.mode === "local") {
-        setTasksMine((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-      } else {
-        await cloudUpdateTask(id, user.cloud.id, patch);
-        const [mine, all] = await Promise.all([cloudFetchMine(user.cloud.id), cloudFetchAll()]);
-        setTasksMine(mine);
-        setTasksAll(all);
-      }
-    } catch (e: any) {
-      console.error(e);
-      alert(`更新に失敗しました: ${e?.message || String(e)}`);
+    if (!user) return;
+
+    if (user.mode === "local") {
+      setTasksMine((prev: Task[]) => prev.map((t) => (t.id === id ? ({ ...t, ...patch } as Task) : t)));
+      return;
     }
+
+    await cloudUpdateTask(id, user.cloud.id, patch);
+    const mine = await cloudFetchMine(user.cloud.id);
+    const all = await cloudFetchAll();
+    setTasksMine(mine);
+    setTasksAll(all);
   }
 
   async function deleteTask(id: string, canEdit: boolean) {
     if (!canEdit) return;
-    try {
-      if (user.mode === "local") {
-        setTasksMine((prev) => prev.filter((t) => t.id !== id));
-      } else {
-        await cloudDeleteTask(id, user.cloud.id);
-        const [mine, all] = await Promise.all([cloudFetchMine(user.cloud.id), cloudFetchAll()]);
-        setTasksMine(mine);
-        setTasksAll(all);
-      }
-    } catch (e: any) {
-      console.error(e);
-      alert(`削除に失敗しました: ${e?.message || String(e)}`);
+    if (!user) return;
+
+    if (user.mode === "local") {
+      setTasksMine((prev: Task[]) => prev.filter((t) => t.id !== id));
+      return;
     }
+
+    await cloudDeleteTask(id, user.cloud.id);
+    const mine = await cloudFetchMine(user.cloud.id);
+    const all = await cloudFetchAll();
+    setTasksMine(mine);
+    setTasksAll(all);
+  }
+
+  function logout() {
+    setUser(null);
   }
 
   return (
@@ -560,7 +477,7 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
               {user.mode === "local" ? user.local.username : user.cloud.displayName}
               {isCloud() ? "（クラウド）" : "（ローカル）"}
             </span>
-            <button className="text-sm text-gray-500 hover:text-black" onClick={onLogout}>
+            <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>
               ログアウト
             </button>
           </div>
@@ -568,7 +485,6 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* Controls */}
         <div className="flex flex-col md:flex-row md:items-end gap-3 md:gap-4 mb-6">
           <div>
             <label className="block text-sm font-medium mb-1">対象日</label>
@@ -581,32 +497,44 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
               <option value="all">全員</option>
             </select>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">メンバー</label>
-            <select className="border rounded-xl px-3 py-2 bg-white" value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
-              {members.map((m) => (
-                <option key={m} value={m}>
-                  {m === "all" ? "すべて" : m}
-                </option>
-              ))}
-            </select>
-          </div>
+          {viewMode === "all" && (
+            <div>
+              <label className="block text-sm font-medium mb-1">メンバー</label>
+              <select className="border rounded-xl px-3 py-2 bg-white" value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
+                {members.map((m) => (
+                  <option key={m} value={m}>
+                    {m === "all" ? "すべて" : m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex-1" />
           <button
             className="rounded-xl border px-3 py-2 hover:bg-white"
-            onClick={async () => {
-              const dt = new Date(date);
-              dt.setDate(dt.getDate() - 1);
-              const y = dt.toISOString().slice(0, 10);
-              const yTasks = tasksMine.filter((t) => t.date === y);
-              if (!yTasks.length) return;
-
-              try {
-                if (user.mode === "local") {
-                  const clones = yTasks.map((t) => ({ ...t, id: uid(), date, actualHours: 0, status: "未着手", createdAt: Date.now() }));
-                  setTasksMine((prev) => [...prev, ...clones]);
-                } else {
-                  // クラウド：idは送らない（自動採番）
+            onClick={() => {
+              // 前日から複製（自分のタスクのみ）
+              if (user.mode === "local") {
+                const dt = new Date(date);
+                dt.setDate(dt.getDate() - 1);
+                const y = dt.toISOString().slice(0, 10);
+                const yTasks = tasksMine.filter((t) => t.date === y);
+                if (!yTasks.length) return;
+                const clones: Task[] = yTasks.map((t) => ({
+                  ...t,
+                  id: uid(),
+                  date,
+                  actualHours: 0,
+                  status: "未着手",
+                  createdAt: Date.now(),
+                }));
+                setTasksMine((prev: Task[]) => [...prev, ...clones]);
+              } else {
+                (async () => {
+                  const dt = new Date(date);
+                  dt.setDate(dt.getDate() - 1);
+                  const y = dt.toISOString().slice(0, 10);
+                  const yTasks = tasksMine.filter((t) => t.date === y);
                   for (const t of yTasks) {
                     const clone = {
                       name: t.name,
@@ -621,13 +549,11 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
                     };
                     await cloudInsertTask(clone as Omit<Task, "id">, user.cloud.id);
                   }
-                  const [mine, all] = await Promise.all([cloudFetchMine(user.cloud.id), cloudFetchAll()]);
+                  const mine = await cloudFetchMine(user.cloud.id);
+                  const all = await cloudFetchAll();
                   setTasksMine(mine);
                   setTasksAll(all);
-                }
-              } catch (e: any) {
-                console.error(e);
-                alert(`複製に失敗しました: ${e?.message || String(e)}`);
+                })();
               }
             }}
             title="前日タスクを複製（実績はリセット）"
@@ -638,10 +564,10 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
 
         {/* 追加フォーム */}
         <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
-          <h2 className="text-base font-semibold">
+          <h2 className="text-base font-semibold mb-4">
             タスクを追加（所有者: {user.mode === "local" ? user.local.username : user.cloud.displayName}）
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mt-3">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <div className="md:col-span-2">
               <label className="block text-sm font-medium mb-1">タスク名</label>
               <input
@@ -710,9 +636,15 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
                       t={row}
                       canEdit={user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id}
                       onUpdate={(patch) =>
-                        updateTask(row.id, patch, user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id)
+                        updateTask(
+                          row.id,
+                          patch,
+                          user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id
+                        )
                       }
-                      onDelete={() => deleteTask(row.id, user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id)}
+                      onDelete={() =>
+                        deleteTask(row.id, user.mode === "local" ? row.member === user.local.username : row.ownerId === user.cloud.id)
+                      }
                     />
                   ))
                 )}
@@ -751,8 +683,7 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
                   try {
                     const parsed = JSON.parse(text) as Task[];
                     if (!Array.isArray(parsed)) throw new Error("invalid");
-                    (parsed as Task[]).forEach((t) => (t.member = user.local!.username));
-                    setTasksMine(parsed);
+                    setTasksMine(parsed.map((t) => ({ ...t, member: user.local!.username })));
                   } catch {
                     alert("JSONが不正です");
                   }
@@ -763,71 +694,21 @@ function AppAuthed({ user, onLogout }: { user: User; onLogout: () => void }) {
         )}
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.3 – クラウド時はIDをDBで自動採番。RLS（read_all / write_own / update_own / delete_own）必須。
+          v2.4 – Vercel環境向けに環境変数/型/UUID採番を修正。Supabase RLS は用途に合わせて設定してください。
         </p>
       </main>
     </div>
   );
 }
 
-/* ====== 親（Root）— フック数を固定 ====== */
-function Root() {
-  const [user, setUser] = useState<User | null>(null); // Rootはこの1個だけ
-
-  const loginView = isCloud() ? (
-    <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />
-  ) : (
-    <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />
-  );
-
-  const authedView = <AppAuthed user={user!} onLogout={() => setUser(null)} />;
-
-  // 早期returnしない。JSXで出し分ける。
-  return user ? authedView : loginView;
-}
-
-/* ====== ErrorBoundary（白紙防止） ====== */
-class SimpleErrorBoundary extends React.Component<any, { err: any }> {
-  constructor(props: any) {
-    super(props);
-    this.state = { err: null };
-  }
-  static getDerivedStateFromError(error: any) {
-    return { err: error };
-  }
-  componentDidCatch(error: any, info: any) {
-    console.error("UI ErrorBoundary:", error, info);
-  }
-  render() {
-    if (this.state.err) {
-      return (
-        <div style={{ padding: 24 }}>
-          <h2>エラーが発生しました</h2>
-          <pre style={{ whiteSpace: "pre-wrap" }}>{String(this.state.err)}</pre>
-          <button onClick={() => (location.href = "/")}>トップに戻る</button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-/* ====== 最終エクスポート ====== */
-export default function App() {
-  return (
-    <SimpleErrorBoundary>
-      <Root />
-    </SimpleErrorBoundary>
-  );
-}
-
-/* ====== 簡易自己テスト ====== */
+// ====== Self test ======
 (function selfTest() {
   try {
     console.assert(hoursOptions.length === 25, "hoursOptions length");
     console.assert(Math.abs(hoursOptions[1] - hoursOptions[0] - 0.5) < 1e-9, "hours step");
     console.assert(/\d{4}-\d{2}-\d{2}/.test(todayStr()), "todayStr format");
-    const setU = new Set<string>(); for (let i = 0; i < 50; i++) setU.add(uid());
+    const setU = new Set<string>();
+    for (let i = 0; i < 50; i++) setU.add(uid());
     console.assert(setU.size === 50, "uid uniqueness small-sample");
   } catch (e) {
     console.warn("Self test failed:", e);
