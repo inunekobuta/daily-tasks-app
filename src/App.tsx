@@ -607,80 +607,95 @@ export default function App() {
         </div>
 
         {/* 追加フォーム（工数予定は無くし、時刻入力を追加） */}
-        <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
-          <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium mb-1">タスク名</label>
-              <input
-                className="w-full border rounded-xl px-3 py-2"
-                placeholder="例: Google広告 週次レポート作成"
-                value={newTask.name}
-                onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">カテゴリ</label>
-              <select
-                className="w-full border rounded-xl px-3 py-2"
-                value={newTask.category}
-                onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
-              >
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
+       {/* 追加フォーム（工数予定は無くし、時刻入力を追加） */}
+<div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
+  <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
-            {/* 開始 */}
-            <div>
-              <label className="block text-sm font-medium mb-1">開始(時)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
-                value={newTask.sH}
-                onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
-              >
-                {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">開始(分)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
-                value={newTask.sM}
-                onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
-              >
-                {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-              </select>
-            </div>
+  {/* 12分割で1行に詰める。items-end でボタン位置も揃える */}
+  <div className="grid grid-cols-12 gap-3 items-end">
+    {/* タスク名：広めに4カラム */}
+    <div className="col-span-4">
+      <label className="block text-sm font-medium mb-1">タスク名</label>
+      <input
+        className="w-full border rounded-xl px-3 py-2"
+        placeholder="例: Google広告 週次レポート作成"
+        value={newTask.name}
+        onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
+      />
+    </div>
 
-            {/* 終了 */}
-            <div>
-              <label className="block text-sm font-medium mb-1">終了(時)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
-                value={newTask.eH}
-                onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
-              >
-                {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">終了(分)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
-                value={newTask.eM}
-                onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
-              >
-                {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-              </select>
-            </div>
+    {/* カテゴリ：2カラム */}
+    <div className="col-span-2">
+      <label className="block text-sm font-medium mb-1">カテゴリ</label>
+      <select
+        className="w-full border rounded-xl px-3 py-2"
+        value={newTask.category}
+        onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
+      >
+        {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+    </div>
 
-            <div className="md:col-span-6 flex items-end">
-              <button className="w-full md:w-auto rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90" onClick={addTask}>
-                追加
-              </button>
-            </div>
-          </div>
-        </div>
+    {/* 開始(時)：1カラム（select自体は w-20 でコンパクト） */}
+    <div className="col-span-1">
+      <label className="block text-sm font-medium mb-1">開始(時)</label>
+      <select
+        className="border rounded-xl px-3 py-2 w-20"
+        value={newTask.sH}
+        onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
+      >
+        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+      </select>
+    </div>
+
+    {/* 開始(分)：1カラム */}
+    <div className="col-span-1">
+      <label className="block text-sm font-medium mb-1">開始(分)</label>
+      <select
+        className="border rounded-xl px-3 py-2 w-20"
+        value={newTask.sM}
+        onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
+      >
+        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+      </select>
+    </div>
+
+    {/* 終了(時)：1カラム */}
+    <div className="col-span-1">
+      <label className="block text-sm font-medium mb-1">終了(時)</label>
+      <select
+        className="border rounded-xl px-3 py-2 w-20"
+        value={newTask.eH}
+        onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
+      >
+        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+      </select>
+    </div>
+
+    {/* 終了(分)：1カラム */}
+    <div className="col-span-1">
+      <label className="block text-sm font-medium mb-1">終了(分)</label>
+      <select
+        className="border rounded-xl px-3 py-2 w-20"
+        value={newTask.eM}
+        onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
+      >
+        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+      </select>
+    </div>
+
+    {/* 追加ボタン：1カラム */}
+    <div className="col-span-1">
+      <button
+        className="w-full rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90"
+        onClick={addTask}
+      >
+        追加
+      </button>
+    </div>
+  </div>
+</div>
+
 
         {/* 一覧 */}
         <div className="bg-white rounded-2xl shadow overflow-hidden">
