@@ -3,12 +3,10 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
- * v3.2.0
- * - Google OAuth (Supabase) 前提、メール+PW UIは無し
- * - 追加フォーム: 開始/終了（時・分 0/15/30/45）プルダウン、等幅・間隔調整済み
- * - 「Googleカレンダーにも登録」チェック（追加ボタン直上）
- * - 一覧: メンバー見出しでグループ化、IME対応の「振り返り」
- * - 操作列: ヘッダーの「操作」タイトル非表示、各行の削除は「×」アイコン
+ * v3.2.1
+ * - ヘッダー中央揃え
+ * - 実績入力の右揃え
+ * - ステータス色: 未着手=赤 / 仕掛中=黄 / 完了=緑
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -92,9 +90,10 @@ function CategoryPill({ value }: { value: Category }) {
 }
 function StatusPill({ value }: { value: Status }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
+  // ★色指定をリクエスト通りに変更
   const map: Record<Status, string> = {
-    "未着手": `${base} bg-slate-100 text-slate-700 border border-slate-200`,
-    "仕掛中": `${base} bg-sky-100 text-sky-700 border border-sky-200`,
+    "未着手": `${base} bg-rose-100 text-rose-700 border border-rose-200`,
+    "仕掛中": `${base} bg-amber-100 text-amber-700 border border-amber-200`,
     "完了": `${base} bg-emerald-100 text-emerald-700 border border-emerald-200`,
   };
   return <span className={map[value]}>{value}</span>;
@@ -714,17 +713,18 @@ export default function App() {
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
+                {/* ★ヘッダーは全て中央揃え */}
                 <tr className="bg-slate-50/80 text-left border-b border-slate-200/70 text-slate-600">
-                  <th className="p-3 font-semibold">タスク名</th>
-                  <th className="p-3 font-semibold">カテゴリ</th>
-                  <th className="p-3 font-semibold w-24">開始</th>
-                  <th className="p-3 font-semibold w-24">終了</th>
-                  <th className="p-3 font-semibold w-28 text-right">工数(予定)</th>
-                  <th className="p-3 font-semibold w-32">実績</th>
-                  <th className="p-3 font-semibold w-36">ステータス</th>
-                  <th className="p-3 font-semibold">振り返り</th>
+                  <th className="p-3 font-semibold text-center">タスク名</th>
+                  <th className="p-3 font-semibold text-center">カテゴリ</th>
+                  <th className="p-3 font-semibold w-24 text-center">開始</th>
+                  <th className="p-3 font-semibold w-24 text-center">終了</th>
+                  <th className="p-3 font-semibold w-28 text-center">工数(予定)</th>
+                  <th className="p-3 font-semibold w-32 text-center">実績</th>
+                  <th className="p-3 font-semibold w-36 text-center">ステータス</th>
+                  <th className="p-3 font-semibold text-center">振り返り</th>
                   {/* 操作タイトルは空（列は維持） */}
-                  <th className="p-3 w-16 text-right"></th>
+                  <th className="p-3 w-16 text-center"></th>
                 </tr>
               </thead>
               <tbody>
@@ -744,20 +744,25 @@ export default function App() {
                             <td className="p-3 align-top">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5">{row.name}</div>
                             </td>
-                            <td className="p-3 align-top"><CategoryPill value={row.category} /></td>
-                            <td className="p-3 align-top w-24">
+                            <td className="p-3 align-top text-center">
+                              <CategoryPill value={row.category} />
+                            </td>
+                            <td className="p-3 align-top w-24 text-center">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.startTime ?? "—"}</div>
                             </td>
-                            <td className="p-3 align-top w-24">
+                            <td className="p-3 align-top w-24 text-center">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.endTime ?? "—"}</div>
                             </td>
-                            <td className="p-3 align-top w-28 text-right">
-                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-right font-medium">{planned.toFixed(2)}</div>
+                            <td className="p-3 align-top w-28">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-right font-medium">
+                                {planned.toFixed(2)}
+                              </div>
                             </td>
                             <td className="p-3 align-top w-32">
                               {canEdit ? (
                                 <Input
                                   type="number" min={0} step={0.25}
+                                  className="text-right"  // ★実績は右揃え
                                   value={row.actualHours}
                                   onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) })}
                                 />
@@ -767,7 +772,7 @@ export default function App() {
                                 </div>
                               )}
                             </td>
-                            <td className="p-3 align-top w-36">
+                            <td className="p-3 align-top w-36 text-center">
                               {canEdit ? (
                                 <Select
                                   value={row.status}
@@ -786,8 +791,8 @@ export default function App() {
                                 onSave={(val) => updateTask(row.id, { retrospective: val })}
                               />
                             </td>
-                            {/* 削除：「×」アイコン */}
-                            <td className="p-3 align-top w-16 text-right">
+                            {/* 削除：「×」アイコン（右側） */}
+                            <td className="p-3 align-top w-16 text-center">
                               {canEdit ? (
                                 <button
                                   className="text-slate-400 hover:text-rose-600 hover:scale-110 transition-transform"
@@ -811,7 +816,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-slate-500 mt-6">
-          v3.2.0 – モダンUI・操作列タイトル非表示／削除は「×」アイコン。
+          v3.2.1 – ヘッダー中央揃え / 実績右揃え / ステータス色（赤・黄・緑）。
         </p>
       </main>
     </div>
