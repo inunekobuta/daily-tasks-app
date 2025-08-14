@@ -2,14 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * 1日のタスク管理ツール（Googleログイン専用）
- * v3.0.3
- * - 認証: Supabase OAuth（Googleのみ）
- * - 追加フォーム: 開始/終了（時・分は0/15/30/45）プルダウン、select幅は w-20
- * - 「Googleカレンダーにも登録」チェック → primary にイベント作成（ボタン直上に配置）
- * - 一覧: メンバーごとに見出しでグループ化
- * - 編集可: 実績/ステータス/振り返り（IME対応・デバウンス保存）
- * - 「前日から複製」やメール+パスワードUI、ローカル保存は無し
+ * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
+ * v3.1.0 (UI Refresh)
+ * - ガラスヘッダー + グラデーション背景
+ * - カードUI、フラット＋立体のバランス、繊細な境界線
+ * - ステータス/カテゴリはピル表示
+ * - 入力UIはラベリング/フォーカスリング/ホバーを調整
+ * - 開始/終了のselectをコンパクト＆等幅に
+ * - 一覧の視認性/密度を改善、行ホバー/セパレータ、合計表示をチップ化
+ *
+ * 機能面は前回版（Google Calendar連携、メンバーでグルーピング、IME対応の振り返り）を踏襲
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -45,6 +47,68 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i); // 0..23
 const M_OPTIONS = [0, 15, 30, 45];
 
+// ===== 小UIコンポーネント =====
+function Chip({ children, className = "" }: { children: any; className?: string }) {
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${className}`}>
+      {children}
+    </span>
+  );
+}
+
+function CategoryPill({ value }: { value: Category }) {
+  const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium";
+  const map: Record<Category, string> = {
+    "広告運用": `${base} bg-indigo-50 text-indigo-700 border border-indigo-200`,
+    "SEO": `${base} bg-emerald-50 text-emerald-700 border border-emerald-200`,
+    "新規営業": `${base} bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200`,
+    "AF": `${base} bg-amber-50 text-amber-700 border border-amber-200`,
+    "その他": `${base} bg-slate-50 text-slate-700 border border-slate-200`,
+  };
+  return <span className={map[value]}>{value}</span>;
+}
+
+function StatusPill({ value }: { value: Status }) {
+  const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
+  const map: Record<Status, string> = {
+    "未着手": `${base} bg-slate-100 text-slate-700 border border-slate-200`,
+    "仕掛中": `${base} bg-sky-100 text-sky-700 border border-sky-200`,
+    "完了": `${base} bg-emerald-100 text-emerald-700 border border-emerald-200`,
+  };
+  return <span className={map[value]}>{value}</span>;
+}
+
+function FieldLabel({ children }: { children: any }) {
+  return <label className="block text-xs font-semibold text-slate-600 mb-1.5">{children}</label>;
+}
+
+function Input({ className = "", ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
+      {...props}
+    />
+  );
+}
+
+function Select({ className = "", ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
+      {...props}
+    />
+  );
+}
+
+function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center rounded-xl bg-slate-900 text-white px-4 py-2.5 text-sm font-semibold shadow-sm hover:opacity-95 active:opacity-90 focus:outline-none focus:ring-4 focus:ring-slate-200 transition ${className}`}
+      {...props}
+    />
+  );
+}
+
 // ===== Supabase helpers =====
 function noSuchColumn(err: any, col: string) {
   const msg = (err?.message || err?.hint || err?.details || "").toString().toLowerCase();
@@ -54,7 +118,7 @@ function logErr(where: string, err: any) {
   console.error(`[${where}]`, { message: err?.message, details: err?.details, hint: err?.hint, code: err?.code, err });
 }
 
-// ===== Supabase API =====
+// ===== DB I/O =====
 async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const base: any = {
@@ -243,11 +307,10 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
         provider: "google",
         options: {
           scopes: "https://www.googleapis.com/auth/calendar.events",
-          redirectTo: window.location.origin,
+          redirectTo: window.location.origin, // ローカル/Vercel双方OK
         },
       });
       if (error) throw error;
-      // リダイレクト後は useEffect で session を拾う
     } catch (e: any) {
       setError(e.message || String(e));
       setLoading(false);
@@ -275,21 +338,18 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
   }, [onLoggedIn]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6 text-center">
-        <h1 className="text-2xl font-semibold mb-4">1日のタスク管理 – Googleログイン</h1>
-        <p className="text-gray-600 mb-4">Googleアカウントでログインし、カレンダー連携できます。</p>
-        {error && <div className="text-red-600 text-sm mb-3">{error}</div>}
-        <button
-          className="inline-flex items-center gap-2 rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90 disabled:opacity-60"
-          onClick={signInWithGoogle}
-          disabled={loading}
-        >
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-slate-100">
+      <div className="w-full max-w-md rounded-3xl border border-slate-200/70 bg-white/80 backdrop-blur-xl shadow-xl p-8 text-center">
+        <div className="mx-auto mb-4 h-12 w-12 rounded-2xl bg-slate-900" />
+        <h1 className="text-2xl font-bold tracking-tight">1日のタスク管理</h1>
+        <p className="text-slate-600 mt-1.5 text-sm">Googleアカウントでログインし、カレンダー連携できます。</p>
+        {error && <div className="text-red-600 text-sm mt-3">{error}</div>}
+        <Button className="w-full mt-6" onClick={signInWithGoogle} disabled={loading}>
           {loading ? "リダイレクト中..." : "Googleでログイン"}
-        </button>
+        </Button>
         {!SUPABASE_READY && (
           <p className="text-xs text-orange-600 mt-3">
-            ※ Vercelの環境変数に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください
+            ※ Vercel環境に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください
           </p>
         )}
       </div>
@@ -324,13 +384,13 @@ function RetrospectiveCell({
   };
 
   if (!canEdit) {
-    return <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 whitespace-pre-wrap min-h-[2.5rem]">{(text ?? "").trim() || "—"}</div>;
+    return <div className="w-full min-h-[2.5rem] whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">{(text ?? "").trim() || "—"}</div>;
   }
 
   return (
     <textarea
       rows={2}
-      className="w-full border rounded-lg px-2 py-1"
+      className="w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition"
       placeholder={placeholder}
       value={text}
       onChange={(e) => { const next = e.target.value; setText(next); if (!composingRef.current) scheduleSave(next); }}
@@ -397,9 +457,7 @@ export default function App() {
         const all = await cloudFetchAll();
         setTasksMine(mine);
         setTasksAll(all);
-      } catch (e) {
-        console.error("[initial load]", e);
-      }
+      } catch (e) { console.error("[initial load]", e); }
     })();
   }, [user?.id]);
 
@@ -475,14 +533,11 @@ export default function App() {
     try {
       await cloudInsertTask(base as Omit<Task, "id">, user.id);
 
+      // Googleカレンダー登録（任意）
       if (addToGoogleCalendar) {
         try {
           await createGoogleCalendarEvent(
-            date,
-            startTime,
-            endTime,
-            base.name,
-            `カテゴリ: ${base.category}`
+            date, startTime, endTime, base.name, `カテゴリ: ${base.category}`
           );
         } catch (e) {
           console.error("[google calendar]", e);
@@ -540,55 +595,66 @@ export default function App() {
   const canEditTask = (t: Task) => t.ownerId === user.id;
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900">
-      <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div className="min-h-screen bg-[radial-gradient(1200px_800px_at_10%_-10%,#eef2ff,transparent),radial-gradient(1000px_600px_at_110%_10%,#fdf2f8,transparent),linear-gradient(to_bottom,#ffffff,70%,#f8fafc)] text-slate-900">
+      {/* Glass Header */}
+      <header className="sticky top-0 z-20 border-b border-slate-200/70 bg-white/70 backdrop-blur-xl">
+        <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-black" />
-            <h1 className="text-lg sm:text-xl font-semibold">1日のタスク管理</h1>
+            <div className="h-9 w-9 rounded-2xl bg-slate-900 shadow-sm" />
+            <div>
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight">1日のタスク管理</h1>
+              <p className="text-xs text-slate-500 -mt-0.5">Google連携・クラウド同期</p>
+            </div>
           </div>
-        <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-600">{myName}（Google）</span>
-            <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>ログアウト</button>
+          <div className="flex items-center gap-3">
+            <Chip className="bg-white/70 border-slate-200 text-slate-700 shadow-sm">{myName}</Chip>
+            <Button className="bg-white text-slate-700 border border-slate-200 hover:bg-slate-50" onClick={logout}>
+              ログアウト
+            </Button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6">
+      <main className="mx-auto max-w-6xl px-4 py-8">
         {/* フィルタ */}
-        <div className="flex flex-col md:flex-row md:items-end gap-3 md:gap-4 mb-6">
-          <div>
-            <label className="block text-sm font-medium mb-1">対象日</label>
-            <input type="date" className="border rounded-xl px-3 py-2 bg-white" value={date} onChange={(e) => setDate(e.target.value)} />
+        <div className="mb-6 grid grid-cols-12 gap-4">
+          <div className="col-span-12 sm:col-span-4 md:col-span-3">
+            <FieldLabel>対象日</FieldLabel>
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">表示範囲</label>
-            <select className="border rounded-xl px-3 py-2 bg-white" value={viewMode} onChange={(e) => setViewMode(e.target.value as any)}>
+          <div className="col-span-6 sm:col-span-4 md:col-span-3">
+            <FieldLabel>表示範囲</FieldLabel>
+            <Select value={viewMode} onChange={(e) => setViewMode(e.target.value as any)}>
               <option value="mine">自分のみ</option>
               <option value="all">全員</option>
-            </select>
+            </Select>
           </div>
           {viewMode === "all" && (
-            <div>
-              <label className="block text-sm font-medium mb-1">メンバー</label>
-              <select className="border rounded-xl px-3 py-2 bg-white" value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
+            <div className="col-span-6 sm:col-span-4 md:col-span-3">
+              <FieldLabel>メンバー</FieldLabel>
+              <Select value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
                 {members.map((m) => <option key={m} value={m}>{m === "all" ? "すべて" : m}</option>)}
-              </select>
+              </Select>
             </div>
           )}
-          <div className="flex-1" />
+          <div className="col-span-12 md:col-span-3 flex items-end">
+            <div className="ml-auto flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm">
+              <span className="text-slate-500">合計</span>
+              <Chip className="bg-indigo-50 border-indigo-200 text-indigo-700">予定 {totals.planned.toFixed(2)}h</Chip>
+              <Chip className="bg-emerald-50 border-emerald-200 text-emerald-700">実績 {totals.actual.toFixed(2)}h</Chip>
+            </div>
+          </div>
         </div>
 
         {/* 追加フォーム */}
-        <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
+        <div className="mb-8 rounded-3xl border border-slate-200/70 bg-white/80 backdrop-blur-xl shadow-xl p-5">
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
-          <div className="grid grid-cols-12 gap-3 items-end">
+          <div className="grid grid-cols-12 gap-4 items-end">
             {/* タスク名 */}
-            <div className="col-span-12 md:col-span-4">
-              <label className="block text-sm font-medium mb-1">タスク名</label>
-              <input
-                className="w-full border rounded-xl px-3 py-2"
+            <div className="col-span-12 md:col-span-5">
+              <FieldLabel>タスク名</FieldLabel>
+              <Input
                 placeholder="例: Google広告 週次レポート作成"
                 value={newTask.name}
                 onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
@@ -597,183 +663,177 @@ export default function App() {
 
             {/* カテゴリ */}
             <div className="col-span-6 md:col-span-2">
-              <label className="block text-sm font-medium mb-1">カテゴリ</label>
-              <select
-                className="w-full border rounded-xl px-3 py-2"
+              <FieldLabel>カテゴリ</FieldLabel>
+              <Select
                 value={newTask.category}
                 onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
               >
                 {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
+              </Select>
             </div>
 
-            {/* 開始(時) */}
+            {/* 開始/終了 */}
             <div className="col-span-3 md:col-span-1">
-              <label className="block text-sm font-medium mb-1">開始(時)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"
+              <FieldLabel>開始(時)</FieldLabel>
+              <Select
+                className="w-24"
                 value={newTask.sH}
                 onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
               >
                 {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-              </select>
+              </Select>
             </div>
-
-            {/* 開始(分) */}
             <div className="col-span-3 md:col-span-1">
-              <label className="block text-sm font-medium mb-1">開始(分)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"
+              <FieldLabel>開始(分)</FieldLabel>
+              <Select
+                className="w-24"
                 value={newTask.sM}
                 onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
               >
                 {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-              </select>
+              </Select>
             </div>
-
-            {/* 終了(時) */}
             <div className="col-span-3 md:col-span-1">
-              <label className="block text-sm font-medium mb-1">終了(時)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"
+              <FieldLabel>終了(時)</FieldLabel>
+              <Select
+                className="w-24"
                 value={newTask.eH}
                 onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
               >
                 {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-              </select>
+              </Select>
             </div>
-
-            {/* 終了(分) */}
             <div className="col-span-3 md:col-span-1">
-              <label className="block text-sm font-medium mb-1">終了(分)</label>
-              <select
-                className="border rounded-xl px-3 py-2 w-20"
+              <FieldLabel>終了(分)</FieldLabel>
+              <Select
+                className="w-24"
                 value={newTask.eM}
                 onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
               >
                 {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-              </select>
+              </Select>
             </div>
 
-            {/* Googleカレンダー登録チェック（ボタンの直上） */}
-            <div className="col-span-12 flex items-center gap-2">
-              <input
-                id="addToGoogleCal"
-                type="checkbox"
-                className="w-4 h-4"
-                checked={addToGoogleCalendar}
-                onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
-              />
-              <label htmlFor="addToGoogleCal" className="text-sm text-gray-700">
-                Googleカレンダーにも登録
+            {/* Googleカレンダー登録チェック（ボタンの直上 / 1行） */}
+            <div className="col-span-12">
+              <label className="inline-flex items-center gap-2 select-none">
+                <input
+                  id="addToGoogleCal"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-200"
+                  checked={addToGoogleCalendar}
+                  onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
+                />
+                <span className="text-sm text-slate-700">Googleカレンダーにも登録</span>
               </label>
             </div>
 
             {/* 追加ボタン */}
-            <div className="col-span-12 md:col-span-1">
-              <button
-                className="w-full rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90"
-                onClick={addTask}
-              >
-                追加
-              </button>
+            <div className="col-span-12 md:col-span-2 md:col-start-11">
+              <Button className="w-full" onClick={addTask}>追加</Button>
             </div>
           </div>
         </div>
 
         {/* 一覧 */}
-        <div className="bg-white rounded-2xl shadow overflow-hidden">
-          <div className="px-4 py-3 border-b flex items-center justify-between">
+        <div className="rounded-3xl border border-slate-200/70 bg-white/80 backdrop-blur-xl shadow-xl overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200/70 flex items-center justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
-            <div className="text-sm text-gray-600">
-              合計: 予定 {totals.planned.toFixed(2)}h / 実績 {totals.actual.toFixed(2)}h
+            <div className="hidden sm:flex items-center gap-2">
+              <Chip className="bg-indigo-50 border-indigo-200 text-indigo-700">予定 {totals.planned.toFixed(2)}h</Chip>
+              <Chip className="bg-emerald-50 border-emerald-200 text-emerald-700">実績 {totals.actual.toFixed(2)}h</Chip>
             </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
-                <tr className="bg-gray-50 text-left border-b">
-                  <th className="p-2">タスク名</th>
-                  <th className="p-2">カテゴリ</th>
-                  <th className="p-2 w-24">開始</th>
-                  <th className="p-2 w-24">終了</th>
-                  <th className="p-2 w-28">工数(予定)</th>
-                  <th className="p-2 w-28">実績</th>
-                  <th className="p-2 w-32">ステータス</th>
-                  <th className="p-2">振り返り</th>
-                  <th className="p-2 w-16 text-right">操作</th>
+                <tr className="bg-slate-50/80 text-left border-b border-slate-200/70 text-slate-600">
+                  <th className="p-3 font-semibold">タスク名</th>
+                  <th className="p-3 font-semibold">カテゴリ</th>
+                  <th className="p-3 font-semibold w-24">開始</th>
+                  <th className="p-3 font-semibold w-24">終了</th>
+                  <th className="p-3 font-semibold w-28 text-right">工数(予定)</th>
+                  <th className="p-3 font-semibold w-32">実績</th>
+                  <th className="p-3 font-semibold w-36">ステータス</th>
+                  <th className="p-3 font-semibold">振り返り</th>
+                  <th className="p-3 font-semibold w-16 text-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {grouped.length === 0 ? (
-                  <tr><td className="p-4 text-gray-500" colSpan={9}>該当タスクがありません。</td></tr>
+                  <tr><td className="p-6 text-slate-500" colSpan={9}>該当タスクがありません。</td></tr>
                 ) : (
                   grouped.flatMap(([member, rows]) => {
                     return [
-                      <tr key={`header-${member}`} className="bg-gray-100 border-b">
-                        <td className="p-2 font-semibold" colSpan={9}>👤 {member}</td>
+                      <tr key={`header-${member}`} className="bg-slate-50/60 border-y border-slate-200/70">
+                        <td className="p-3 font-semibold text-slate-700" colSpan={9}>👤 {member}</td>
                       </tr>,
                       ...rows.map((row) => {
                         const canEdit = canEditTask(row);
                         const planned = displayPlanned(row);
                         return (
-                          <tr key={row.id} className="border-b last:border-b-0">
-                            <td className="p-2 align-top">
-                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.name}</div>
+                          <tr
+                            key={row.id}
+                            className="border-b border-slate-200/70 hover:bg-slate-50/50 transition"
+                          >
+                            <td className="p-3 align-top">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5">{row.name}</div>
                             </td>
-                            <td className="p-2 align-top">
-                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.category}</div>
+                            <td className="p-3 align-top">
+                              <CategoryPill value={row.category} />
                             </td>
-                            <td className="p-2 align-top w-24">
-                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-center">{row.startTime ?? "—"}</div>
+                            <td className="p-3 align-top w-24">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.startTime ?? "—"}</div>
                             </td>
-                            <td className="p-2 align-top w-24">
-                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-center">{row.endTime ?? "—"}</div>
+                            <td className="p-3 align-top w-24">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.endTime ?? "—"}</div>
                             </td>
-                            <td className="p-2 align-top w-28">
-                              <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">{planned.toFixed(2)}</div>
+                            <td className="p-3 align-top w-28 text-right">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-right font-medium">{planned.toFixed(2)}</div>
                             </td>
-                            <td className="p-2 align-top w-28">
+                            <td className="p-3 align-top w-32">
                               {canEdit ? (
-                                <input
+                                <Input
                                   type="number" min={0} step={0.25}
-                                  className="w-full border rounded-lg px-2 py-1"
                                   value={row.actualHours}
                                   onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) })}
                                 />
                               ) : (
-                                <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">
+                                <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-right">
                                   {Number(row.actualHours || 0).toFixed(2)}
                                 </div>
                               )}
                             </td>
-                            <td className="p-2 align-top w-32">
+                            <td className="p-3 align-top w-36">
                               {canEdit ? (
-                                <select
-                                  className="w-full border rounded-lg px-2 py-1"
+                                <Select
                                   value={row.status}
                                   onChange={(e) => updateTask(row.id, { status: e.target.value as Status })}
                                 >
                                   {STATUS.map((s) => <option key={s} value={s}>{s}</option>)}
-                                </select>
+                                </Select>
                               ) : (
-                                <div className="w-full border rounded-lg px-2 py-1 bg-gray-50">{row.status}</div>
+                                <StatusPill value={row.status} />
                               )}
                             </td>
-                            <td className="p-2 align-top">
+                            <td className="p-3 align-top">
                               <RetrospectiveCell
                                 initial={row.retrospective ?? ""}
                                 canEdit={canEdit}
                                 onSave={(val) => updateTask(row.id, { retrospective: val })}
                               />
                             </td>
-                            <td className="p-2 align-top w-16 text-right">
+                            <td className="p-3 align-top w-16 text-right">
                               {canEdit ? (
-                                <button className="text-red-600 hover:underline" onClick={() => deleteTask(row.id)} title="削除">
+                                <button
+                                  className="text-rose-600 hover:text-rose-700 hover:underline"
+                                  onClick={() => deleteTask(row.id)}
+                                  title="削除"
+                                >
                                   削除
                                 </button>
-                              ) : <span className="text-gray-400">-</span>}
+                              ) : <span className="text-slate-400">-</span>}
                             </td>
                           </tr>
                         );
@@ -786,8 +846,8 @@ export default function App() {
           </div>
         </div>
 
-        <p className="text-xs text-gray-500 mt-6">
-          v3.0.3 – Googleログイン専用、追加時にカレンダー登録（任意）。開始/終了はプルダウン、一覧はメンバー見出しでグループ化。
+        <p className="text-xs text-slate-500 mt-6">
+          v3.1.0 – モダンUIリフレッシュ（ガラス/グラデ/ピル/カード）。機能は従来通り、Googleカレンダー連携はチェックでON。
         </p>
       </main>
     </div>
