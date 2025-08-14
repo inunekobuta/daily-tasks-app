@@ -651,88 +651,94 @@ export default function App() {
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
           <div className="grid grid-cols-12 gap-4 items-end">
-            {/* タスク名 */}
-            <div className="col-span-12 md:col-span-5">
-              <FieldLabel>タスク名</FieldLabel>
-              <Input
-                placeholder="例: Google広告 週次レポート作成"
-                value={newTask.name}
-                onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
-              />
-            </div>
+  {/* タスク名 */}
+  <div className="col-span-12 md:col-span-5">
+    <FieldLabel>タスク名</FieldLabel>
+    <Input
+      placeholder="例: Google広告 週次レポート作成"
+      value={newTask.name}
+      onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
+    />
+  </div>
 
-            {/* カテゴリ */}
-            <div className="col-span-6 md:col-span-2">
-              <FieldLabel>カテゴリ</FieldLabel>
-              <Select
-                value={newTask.category}
-                onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
-              >
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </Select>
-            </div>
+  {/* カテゴリ */}
+  <div className="col-span-6 md:col-span-2">
+    <FieldLabel>カテゴリ</FieldLabel>
+    <Select
+      value={newTask.category}
+      onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
+    >
+      {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+    </Select>
+  </div>
 
-            {/* 開始/終了 */}
-            <div className="col-span-3 md:col-span-1">
-              <FieldLabel>開始(時)</FieldLabel>
-              <Select
-                className="w-24"
-                value={newTask.sH}
-                onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
-              >
-                {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-              </Select>
-            </div>
-            <div className="col-span-3 md:col-span-1">
-              <FieldLabel>開始(分)</FieldLabel>
-              <Select
-                className="w-24"
-                value={newTask.sM}
-                onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
-              >
-                {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-              </Select>
-            </div>
-            <div className="col-span-3 md:col-span-1">
-              <FieldLabel>終了(時)</FieldLabel>
-              <Select
-                className="w-24"
-                value={newTask.eH}
-                onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
-              >
-                {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-              </Select>
-            </div>
-            <div className="col-span-3 md:col-span-1">
-              <FieldLabel>終了(分)</FieldLabel>
-              <Select
-                className="w-24"
-                value={newTask.eM}
-                onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
-              >
-                {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-              </Select>
-            </div>
+  {/* 時間選択（開始・終了） */}
+  <div className="col-span-6 md:col-span-5 flex flex-wrap gap-3">
+    <div>
+      <FieldLabel>開始(時)</FieldLabel>
+      <Select
+        className="w-20"
+        value={newTask.sH}
+        onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
+      >
+        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+      </Select>
+    </div>
 
-            {/* Googleカレンダー登録チェック（ボタンの直上 / 1行） */}
-            <div className="col-span-12">
-              <label className="inline-flex items-center gap-2 select-none">
-                <input
-                  id="addToGoogleCal"
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-200"
-                  checked={addToGoogleCalendar}
-                  onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
-                />
-                <span className="text-sm text-slate-700">Googleカレンダーにも登録</span>
-              </label>
-            </div>
+    <div>
+      <FieldLabel>開始(分)</FieldLabel>
+      <Select
+        className="w-20"
+        value={newTask.sM}
+        onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
+      >
+        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+      </Select>
+    </div>
 
-            {/* 追加ボタン */}
-            <div className="col-span-12 md:col-span-2 md:col-start-11">
-              <Button className="w-full" onClick={addTask}>追加</Button>
-            </div>
-          </div>
+    <div>
+      <FieldLabel>終了(時)</FieldLabel>
+      <Select
+        className="w-20"
+        value={newTask.eH}
+        onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
+      >
+        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+      </Select>
+    </div>
+
+    <div>
+      <FieldLabel>終了(分)</FieldLabel>
+      <Select
+        className="w-20"
+        value={newTask.eM}
+        onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
+      >
+        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+      </Select>
+    </div>
+  </div>
+
+  {/* Googleカレンダー登録チェック */}
+  <div className="col-span-12">
+    <label className="inline-flex items-center gap-2 select-none">
+      <input
+        id="addToGoogleCal"
+        type="checkbox"
+        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-200"
+        checked={addToGoogleCalendar}
+        onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
+      />
+      <span className="text-sm text-slate-700">Googleカレンダーにも登録</span>
+    </label>
+  </div>
+
+  {/* 追加ボタン */}
+  <div className="col-span-12 md:col-span-2 md:col-start-11">
+    <Button className="w-full" onClick={addTask}>追加</Button>
+  </div>
+</div>
+
         </div>
 
         {/* 一覧 */}
