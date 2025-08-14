@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // ==========================================================
 // 1日のタスク管理ツール（ログイン・工数/実績/ステータス/メンバー/振り返り）
-// v2.6.2 – 表示バグ修正：<tbody> ネスト禁止（追加しても見えない問題を解消）
+// v2.6.4 – IME最適化：振り返りは変換中に保存せず、確定/デバウンスで保存
+//   - RetrospectiveCell を追加（compositionstart/end と debounce 保存）
+//   - 既存の Supabase フォールバック（retrospective 列なしでも動く）は維持
 // ==========================================================
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -13,7 +15,6 @@ const supabase: SupabaseClient | null = SUPABASE_READY ? createClient(SUPABASE_U
 
 const CATEGORIES = ["広告運用", "SEO", "新規営業", "AF", "その他"] as const;
 const STATUS = ["未着手", "仕掛中", "完了"] as const;
-
 type Category = typeof CATEGORIES[number];
 type Status = typeof STATUS[number];
 
@@ -75,22 +76,32 @@ function saveLocalTasks(username: string, tasks: Task[]) {
   localStorage.setItem(storageKey(username), JSON.stringify(tasks));
 }
 
+// ----- Supabase helpers -----
+function isNoColumnRetrospective(err: any) {
+  const msg = (err?.message || err?.hint || err?.details || "").toString().toLowerCase();
+  return msg.includes("retrospective") && (msg.includes("does not exist") || msg.includes("column"));
+}
+function logErr(where: string, err: any) {
+  console.error(`[${where}]`, { message: err?.message, details: err?.details, hint: err?.hint, code: err?.code, err });
+}
+
 // ----- Supabase -----
 async function cloudSignIn(email: string, password: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
+  if (error) { logErr("signIn", error); throw error; }
   return data.user;
 }
 async function cloudSignUp(email: string, password: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) throw error;
+  if (error) { logErr("signUp", error); throw error; }
   return data.user;
 }
+
 async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
-  const payload = {
+  const payloadBase: any = {
     owner_id: ownerId,
     member: t.member,
     name: t.name,
@@ -100,32 +111,43 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     status: t.status,
     date: t.date,
     created_at: new Date(t.createdAt).toISOString(),
-    retrospective: t.retrospective ?? null,
   };
-  const { error } = await supabase.from("tasks").insert(payload);
-  if (error) throw error;
+  let { error } = await supabase.from("tasks").insert({ ...payloadBase, retrospective: t.retrospective ?? null });
+  if (error) {
+    if (isNoColumnRetrospective(error)) {
+      const retry = await supabase.from("tasks").insert(payloadBase);
+      if (retry.error) { logErr("insert(retry)", retry.error); throw retry.error; }
+    } else { logErr("insert", error); throw error; }
+  }
 }
 async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>) {
   if (!supabase) throw new Error("Supabase未設定");
-  const payload: any = {};
-  if (patch.actualHours !== undefined) payload.actual_hours = patch.actualHours;
-  if (patch.status !== undefined) payload.status = patch.status;
-  if (patch.plannedHours !== undefined) payload.planned_hours = patch.plannedHours;
-  if (patch.retrospective !== undefined) payload.retrospective = patch.retrospective;
-  const { error } = await supabase.from("tasks").update(payload).eq("id", id).eq("owner_id", ownerId);
-  if (error) throw error;
+  const toDb = (p: Partial<Task>) => {
+    const o: any = {};
+    if (p.actualHours !== undefined) o.actual_hours = p.actualHours;
+    if (p.status !== undefined) o.status = p.status;
+    if (p.plannedHours !== undefined) o.planned_hours = p.plannedHours;
+    if (p.retrospective !== undefined) o.retrospective = p.retrospective;
+    return o;
+  };
+  let { error } = await supabase.from("tasks").update(toDb(patch)).eq("id", id).eq("owner_id", ownerId);
+  if (error) {
+    if (isNoColumnRetrospective(error) && "retrospective" in patch) {
+      const p2 = { ...patch }; delete (p2 as any).retrospective;
+      const retry = await supabase.from("tasks").update(toDb(p2)).eq("id", id).eq("owner_id", ownerId);
+      if (retry.error) { logErr("update(retry)", retry.error); throw retry.error; }
+    } else { logErr("update", error); throw error; }
+  }
 }
 async function cloudDeleteTask(id: string, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const { error } = await supabase.from("tasks").delete().eq("id", id).eq("owner_id", ownerId);
-  if (error) throw error;
+  if (error) { logErr("delete", error); throw error; }
 }
 async function cloudFetchAll(): Promise<Task[]> {
   if (!supabase) throw new Error("Supabase未設定");
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at, retrospective");
-  if (error) throw error;
+  const { data, error } = await supabase.from("tasks").select("*");
+  if (error) { logErr("fetchAll", error); throw error; }
   return (data || []).map((r: any) => ({
     id: r.id,
     ownerId: r.owner_id,
@@ -137,16 +159,13 @@ async function cloudFetchAll(): Promise<Task[]> {
     status: r.status as Status,
     date: r.date,
     createdAt: new Date(r.created_at).getTime(),
-    retrospective: r.retrospective ?? "",
+    retrospective: (r as any).retrospective ?? "",
   }));
 }
 async function cloudFetchMine(ownerId: string): Promise<Task[]> {
   if (!supabase) throw new Error("Supabase未設定");
-  const { data, error } = await supabase
-    .from("tasks")
-    .select("id, owner_id, member, name, category, planned_hours, actual_hours, status, date, created_at, retrospective")
-    .eq("owner_id", ownerId);
-  if (error) throw error;
+  const { data, error } = await supabase.from("tasks").select("*").eq("owner_id", ownerId);
+  if (error) { logErr("fetchMine", error); throw error; }
   return (data || []).map((r: any) => ({
     id: r.id,
     ownerId: r.owner_id,
@@ -158,7 +177,7 @@ async function cloudFetchMine(ownerId: string): Promise<Task[]> {
     status: r.status as Status,
     date: r.date,
     createdAt: new Date(r.created_at).getTime(),
-    retrospective: r.retrospective ?? "",
+    retrospective: (r as any).retrospective ?? "",
   }));
 }
 
@@ -221,7 +240,7 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
   const [username, setUsername] = useState("");
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6">
+      <div className="w-full max-w-md bg白 rounded-2xl shadow p-6">
         <h1 className="text-2xl font-semibold mb-4">1日のタスク管理 – ローカル</h1>
         <p className="text-gray-600 mb-6">ユーザー名でログイン（ローカル保存のみ / サーバー不要）</p>
         <label className="block text-sm font-medium mb-1">ユーザー名</label>
@@ -231,6 +250,84 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
         </button>
       </div>
     </div>
+  );
+}
+
+// ====== 振り返りセル（IME対応・デバウンス保存） ======
+function RetrospectiveCell({
+  initial,
+  canEdit,
+  onSave,
+  placeholder = "今日の気づき/改善点など",
+  debounceMs = 600,
+}: {
+  initial: string;
+  canEdit: boolean;
+  onSave: (value: string) => void | Promise<void>;
+  placeholder?: string;
+  debounceMs?: number;
+}) {
+  const [text, setText] = useState(initial ?? "");
+  const composingRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
+
+  // 親から値が更新されたら同期（他端末更新など）
+  useEffect(() => {
+    if (!composingRef.current) setText(initial ?? "");
+  }, [initial]);
+
+  // アンマウントでタイマー掃除
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const scheduleSave = (next: string) => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      onSave(next);
+    }, debounceMs);
+  };
+
+  if (!canEdit) {
+    return (
+      <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 whitespace-pre-wrap min-h-[2.5rem]">
+        {(text ?? "").trim() || "—"}
+      </div>
+    );
+  }
+
+  return (
+    <textarea
+      rows={2}
+      className="w-full border rounded-lg px-2 py-1"
+      placeholder={placeholder}
+      value={text}
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        // 変換中は保存しない
+        if (!composingRef.current) scheduleSave(next);
+      }}
+      onCompositionStart={() => {
+        composingRef.current = true;
+        if (timerRef.current) window.clearTimeout(timerRef.current);
+      }}
+      onCompositionEnd={(e) => {
+        composingRef.current = false;
+        const next = (e.target as HTMLTextAreaElement).value;
+        setText(next);
+        scheduleSave(next); // 確定後に保存
+      }}
+      onBlur={(e) => {
+        // フォーカス外れたら即保存（変換中でない場合）
+        if (!composingRef.current) {
+          if (timerRef.current) window.clearTimeout(timerRef.current);
+          onSave(e.currentTarget.value);
+        }
+      }}
+    />
   );
 }
 
@@ -246,14 +343,18 @@ export default function App() {
   useEffect(() => {
     (async () => {
       if (!user) return;
-      if (user.mode === "local") {
-        setTasksMine(loadLocalTasks(user.local.username));
-        setTasksAll(loadLocalAll());
-      } else {
-        const mine = await cloudFetchMine(user.cloud.id);
-        const all = await cloudFetchAll();
-        setTasksMine(mine);
-        setTasksAll(all);
+      try {
+        if (user.mode === "local") {
+          setTasksMine(loadLocalTasks(user.local.username));
+          setTasksAll(loadLocalAll());
+        } else {
+          const mine = await cloudFetchMine(user.cloud.id);
+          const all = await cloudFetchAll();
+          setTasksMine(mine);
+          setTasksAll(all);
+        }
+      } catch (e) {
+        console.error("[initial load]", e);
       }
     })();
   }, [user && (user.mode === "local" ? user.local.username : user.cloud.id)]);
@@ -322,51 +423,61 @@ export default function App() {
       retrospective: "",
     };
 
-    if (user.mode === "local") {
-      const withId: Task = { id: uid(), ...base };
-      setTasksMine((prev: Task[]) => [...prev, withId]);
+    try {
+      if (user.mode === "local") {
+        const withId: Task = { id: uid(), ...base };
+        setTasksMine((prev: Task[]) => [...prev, withId]);
+      } else {
+        await cloudInsertTask(base as Omit<Task, "id">, user.cloud.id);
+        const mine = await cloudFetchMine(user.cloud.id);
+        const all = await cloudFetchAll();
+        setTasksMine(mine);
+        setTasksAll(all);
+      }
       setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
-      return;
+    } catch (e) {
+      console.error("[addTask]", e);
+      alert("タスク追加に失敗しました。コンソールのエラーを確認してください。");
     }
-    await cloudInsertTask(base as Omit<Task, "id">, user.cloud.id);
-    const mine = await cloudFetchMine(user.cloud.id);
-    const all = await cloudFetchAll();
-    setTasksMine(mine);
-    setTasksAll(all);
-    setNewTask({ name: "", category: newTask.category, plannedHours: newTask.plannedHours });
   }
 
   async function updateTask(id: string, patch: Partial<Task>, canEdit: boolean) {
-    if (!canEdit) return;
-    if (!user) return;
-    if (user.mode === "local") {
-      setTasksMine((prev: Task[]) => prev.map((t) => (t.id === id ? ({ ...t, ...patch } as Task) : t)));
-      return;
+    if (!canEdit || !user) return;
+    try {
+      if (user.mode === "local") {
+        setTasksMine((prev: Task[]) => prev.map((t) => (t.id === id ? ({ ...t, ...patch } as Task) : t)));
+      } else {
+        await cloudUpdateTask(id, user.cloud.id, patch);
+        const mine = await cloudFetchMine(user.cloud.id);
+        const all = await cloudFetchAll();
+        setTasksMine(mine);
+        setTasksAll(all);
+      }
+    } catch (e) {
+      console.error("[updateTask]", e);
+      alert("更新に失敗しました。");
     }
-    await cloudUpdateTask(id, user.cloud.id, patch);
-    const mine = await cloudFetchMine(user.cloud.id);
-    const all = await cloudFetchAll();
-    setTasksMine(mine);
-    setTasksAll(all);
   }
 
   async function deleteTask(id: string, canEdit: boolean) {
-    if (!canEdit) return;
-    if (!user) return;
-    if (user.mode === "local") {
-      setTasksMine((prev: Task[]) => prev.filter((t) => t.id !== id));
-      return;
+    if (!canEdit || !user) return;
+    try {
+      if (user.mode === "local") {
+        setTasksMine((prev: Task[]) => prev.filter((t) => t.id !== id));
+      } else {
+        await cloudDeleteTask(id, user.cloud.id);
+        const mine = await cloudFetchMine(user.cloud.id);
+        const all = await cloudFetchAll();
+        setTasksMine(mine);
+        setTasksAll(all);
+      }
+    } catch (e) {
+      console.error("[deleteTask]", e);
+      alert("削除に失敗しました。");
     }
-    await cloudDeleteTask(id, user.cloud.id);
-    const mine = await cloudFetchMine(user.cloud.id);
-    const all = await cloudFetchAll();
-    setTasksMine(mine);
-    setTasksAll(all);
   }
 
-  function logout() {
-    setUser(null);
-  }
+  function logout() { setUser(null); }
 
   if (!user) {
     return isCloud()
@@ -494,7 +605,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* 一覧（メンバーグループ。tbodyは一つに統一！） */}
+        {/* 一覧（tbody は 1つ） */}
         <div className="bg-white rounded-2xl shadow overflow-hidden">
           <div className="px-4 py-3 border-b flex items-center justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
@@ -514,20 +625,15 @@ export default function App() {
                   <th className="p-2 w-16 text-right">操作</th>
                 </tr>
               </thead>
-
-              {/* ここが修正点：tbody は 1つだけ。中でフラグメントを使って行を並べる */}
               <tbody>
                 {grouped.length === 0 ? (
                   <tr><td className="p-4 text-gray-500" colSpan={7}>該当タスクがありません。</td></tr>
                 ) : (
                   grouped.map(([member, rows]) => (
                     <>
-                      {/* メンバー見出し行 */}
                       <tr key={`header-${member}`} className="bg-gray-100 border-b">
                         <td className="p-2 font-semibold" colSpan={7}>👤 {member}</td>
                       </tr>
-
-                      {/* タスク行 */}
                       {rows.map((row) => {
                         const canEdit = canEditTask(row);
                         return (
@@ -569,19 +675,11 @@ export default function App() {
                               )}
                             </td>
                             <td className="p-2 align-top">
-                              {canEdit ? (
-                                <textarea
-                                  rows={2}
-                                  className="w-full border rounded-lg px-2 py-1"
-                                  placeholder="今日の気づき/改善点など"
-                                  value={row.retrospective ?? ""}
-                                  onChange={(e) => updateTask(row.id, { retrospective: e.target.value }, true)}
-                                />
-                              ) : (
-                                <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 whitespace-pre-wrap min-h-[2.5rem]">
-                                  {(row.retrospective ?? "").trim() || "—"}
-                                </div>
-                              )}
+                              <RetrospectiveCell
+                                initial={row.retrospective ?? ""}
+                                canEdit={canEdit}
+                                onSave={(val) => updateTask(row.id, { retrospective: val }, true)}
+                              />
                             </td>
                             <td className="p-2 align-top w-16 text-right">
                               {canEdit ? (
@@ -604,8 +702,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.6.2 – テーブル構造を修正（tbodyを一つに統一）。追加したタスクが即座に表示されます。
-        </p>
+          v2.6.4 – 振り返りのIME入力を最適化（変換中は保存しない／確定・デバウンス保存）。</p>
       </main>
     </div>
   );
