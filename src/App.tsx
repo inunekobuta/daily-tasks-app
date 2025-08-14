@@ -3,12 +3,13 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール
- * v2.8.0
+ * v2.8.2
  * - 追加フォーム: 開始/終了 時刻 (24h) を「時」「分(0/15/30/45)」のプルダウンで入力
- * - 工数(予定)の手動入力を廃止。一覧では開始⇄終了の差分から自動算出
+ * - 工数(予定)の手動入力は廃止。一覧では開始⇄終了の差分から自動算出
  * - タスク名/カテゴリ/工数(予定)は一覧で編集不可のまま
  * - 振り返りはIME対応(変換中は保存しない/確定・デバウンス保存)
- * - Supabaseは start_time/end_time/retrospective が無くてもフォールバックで動作
+ * - Supabase: start_time/end_time/retrospective が無くてもフォールバックで動作
+ * - UI: 時/分のセレクト幅を w-20 でコンパクト化
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -25,7 +26,7 @@ type Task = {
   id: string;
   name: string;
   category: Category;
-  plannedHours: number; // 互換用に保持はするが、表示は start/end の差分優先
+  plannedHours: number; // 互換用に保持はするが、表示は start/end の差分を優先
   actualHours: number;
   status: Status;
   date: string;       // YYYY-MM-DD
@@ -44,6 +45,7 @@ type User =
   | { mode: "cloud"; cloud: CloudUser };
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
+// 時/分プルダウン
 const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i); // 0..23
 const M_OPTIONS = [0, 15, 30, 45];
 
@@ -575,11 +577,9 @@ export default function App() {
                   ...t, id: uid(), date,
                   actualHours: 0, status: "未着手",
                   createdAt: Date.now(), retrospective: "",
-                  // 時刻も複製
                   startTime: t.startTime ?? null,
                   endTime: t.endTime ?? null,
-                  // plannedHours 互換（表示は時刻差分）
-                  plannedHours: displayPlanned(t),
+                  plannedHours: displayPlanned(t), // 互換（表示は時刻差分）
                 }));
                 setTasksMine((prev: Task[]) => [...prev, ...clones]);
               } else {
@@ -634,7 +634,7 @@ export default function App() {
             <div>
               <label className="block text-sm font-medium mb-1">開始(時)</label>
               <select
-                className="w-full border rounded-xl px-3 py-2"
+                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
                 value={newTask.sH}
                 onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
               >
@@ -644,7 +644,7 @@ export default function App() {
             <div>
               <label className="block text-sm font-medium mb-1">開始(分)</label>
               <select
-                className="w-full border rounded-xl px-3 py-2"
+                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
                 value={newTask.sM}
                 onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
               >
@@ -656,7 +656,7 @@ export default function App() {
             <div>
               <label className="block text-sm font-medium mb-1">終了(時)</label>
               <select
-                className="w-full border rounded-xl px-3 py-2"
+                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
                 value={newTask.eH}
                 onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
               >
@@ -666,7 +666,7 @@ export default function App() {
             <div>
               <label className="block text-sm font-medium mb-1">終了(分)</label>
               <select
-                className="w-full border rounded-xl px-3 py-2"
+                className="border rounded-xl px-3 py-2 w-20"   // 幅を絞る
                 value={newTask.eM}
                 onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
               >
@@ -684,7 +684,7 @@ export default function App() {
 
         {/* 一覧 */}
         <div className="bg-white rounded-2xl shadow overflow-hidden">
-          <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="px-4 py-3 border-b flex itemsセンター justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
             <div className="text-sm text-gray-600">
               合計: 予定 {totals.planned.toFixed(2)}h / 実績 {totals.actual.toFixed(2)}h
@@ -788,7 +788,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.8.0 – 追加時に開始/終了を選択、工数(予定)は自動算出（一覧表示のみ）。</p>
+          v2.8.2 – 追加時に開始/終了を選択、工数(予定)は自動算出。セレクト幅をw-20に最適化。</p>
       </main>
     </div>
   );
