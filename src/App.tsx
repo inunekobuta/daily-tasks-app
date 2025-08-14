@@ -78,7 +78,12 @@ function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLBut
   );
 }
 function CategoryPill({ value }: { value: Category }) {
-  const base = "flex items-center justify-center min-h-[2.5rem] rounded-xl border px-3 py-1 text-sm font-medium";
+  // 他セル（開始/終了/工数）の見た目に合わせて高さを固定（h-10=40px）
+  // 横幅も w-full にして、中央寄せ＋角丸＋枠線を統一
+  const base =
+    "w-full h-10 flex items-center justify-center rounded-xl border text-sm font-medium";
+
+  // 色だけカテゴリごとに分ける（薄色の塗り＋同系色ボーダー）
   const map: Record<Category, string> = {
     "広告運用": `${base} bg-indigo-50 text-indigo-700 border-indigo-200`,
     "SEO": `${base} bg-emerald-50 text-emerald-700 border-emerald-200`,
@@ -86,8 +91,10 @@ function CategoryPill({ value }: { value: Category }) {
     "AF": `${base} bg-amber-50 text-amber-700 border-amber-200`,
     "その他": `${base} bg-slate-50 text-slate-700 border-slate-200`,
   };
+
   return <div className={map[value]}>{value}</div>;
 }
+
 function StatusPill({ value }: { value: Status }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
   // ★色指定をリクエスト通りに変更
