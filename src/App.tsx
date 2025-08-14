@@ -3,13 +3,13 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用）
- * v3.0.1
- * - 認証は Supabase OAuth（Google のみ）
- * - 追加フォーム：開始/終了を「時/分(0/15/30/45)」プルダウン（select幅は w-20）
- * - 「Googleカレンダーにも登録」チェックで primary へイベント作成
- * - 一覧はメンバーごとに見出し行でグループ化
- * - 編集可：実績/ステータス/振り返り（IME対応・デバウンス保存）
- * - 仕様：前日から複製なし、メール+パスワードUIなし、ローカル保存なし
+ * v3.0.3
+ * - 認証: Supabase OAuth（Googleのみ）
+ * - 追加フォーム: 開始/終了（時・分は0/15/30/45）プルダウン、select幅は w-20
+ * - 「Googleカレンダーにも登録」チェック → primary にイベント作成（ボタン直上に配置）
+ * - 一覧: メンバーごとに見出しでグループ化
+ * - 編集可: 実績/ステータス/振り返り（IME対応・デバウンス保存）
+ * - 「前日から複製」やメール+パスワードUI、ローカル保存は無し
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -194,7 +194,6 @@ async function createGoogleCalendarEvent(
 ) {
   if (!supabase) throw new Error("Supabase未設定");
   const { data } = await supabase.auth.getSession();
-  // Supabase OAuth（Google）で得た access token
   const accessToken = (data.session as any)?.provider_token as string | undefined;
 
   if (!accessToken) {
@@ -244,7 +243,7 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
         provider: "google",
         options: {
           scopes: "https://www.googleapis.com/auth/calendar.events",
-          redirectTo: window.location.origin, // ローカル/Vercel双方OK
+          redirectTo: window.location.origin,
         },
       });
       if (error) throw error;
@@ -398,7 +397,9 @@ export default function App() {
         const all = await cloudFetchAll();
         setTasksMine(mine);
         setTasksAll(all);
-      } catch (e) { console.error("[initial load]", e); }
+      } catch (e) {
+        console.error("[initial load]", e);
+      }
     })();
   }, [user?.id]);
 
@@ -432,6 +433,19 @@ export default function App() {
     return { planned: Math.round(p * 100) / 100, actual: a };
   }, [tasksForDay]);
 
+  // 追加フォーム state
+  const [newTask, setNewTask] = useState<{
+    name: string;
+    category: Category;
+    sH: number; sM: number;
+    eH: number; eM: number;
+  }>({
+    name: "",
+    category: CATEGORIES[0],
+    sH: 9, sM: 0,
+    eH: 18, eM: 0,
+  });
+
   // 追加
   async function addTask() {
     if (!user) return;
@@ -461,7 +475,6 @@ export default function App() {
     try {
       await cloudInsertTask(base as Omit<Task, "id">, user.id);
 
-      // Googleカレンダー
       if (addToGoogleCalendar) {
         try {
           await createGoogleCalendarEvent(
@@ -481,8 +494,6 @@ export default function App() {
       const all = await cloudFetchAll();
       setTasksMine(mine);
       setTasksAll(all);
-
-      // 名前だけクリア（カテゴリ・時間はキープ）
       setNewTask((v) => ({ ...v, name: "" }));
     } catch (e) {
       console.error("[addTask]", e);
@@ -521,19 +532,6 @@ export default function App() {
 
   function logout() { supabase?.auth.signOut(); }
 
-  // 追加フォーム state
-  const [newTask, setNewTask] = useState<{
-    name: string;
-    category: Category;
-    sH: number; sM: number;
-    eH: number; eM: number;
-  }>({
-    name: "",
-    category: CATEGORIES[0],
-    sH: 9, sM: 0,
-    eH: 18, eM: 0,
-  });
-
   if (!user) {
     return <CloudLogin onLoggedIn={(u) => setUser(u)} />;
   }
@@ -549,7 +547,7 @@ export default function App() {
             <div className="w-8 h-8 rounded-xl bg-black" />
             <h1 className="text-lg sm:text-xl font-semibold">1日のタスク管理</h1>
           </div>
-          <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3">
             <span className="text-sm text-gray-600">{myName}（Google）</span>
             <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>ログアウト</button>
           </div>
@@ -585,9 +583,8 @@ export default function App() {
         <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
-          {/* 12分割で1行に詰める */}
           <div className="grid grid-cols-12 gap-3 items-end">
-            {/* タスク名：4カラム */}
+            {/* タスク名 */}
             <div className="col-span-12 md:col-span-4">
               <label className="block text-sm font-medium mb-1">タスク名</label>
               <input
@@ -598,7 +595,7 @@ export default function App() {
               />
             </div>
 
-            {/* カテゴリ：2カラム */}
+            {/* カテゴリ */}
             <div className="col-span-6 md:col-span-2">
               <label className="block text-sm font-medium mb-1">カテゴリ</label>
               <select
@@ -610,7 +607,7 @@ export default function App() {
               </select>
             </div>
 
-            {/* 開始(時)：1カラム */}
+            {/* 開始(時) */}
             <div className="col-span-3 md:col-span-1">
               <label className="block text-sm font-medium mb-1">開始(時)</label>
               <select
@@ -622,7 +619,7 @@ export default function App() {
               </select>
             </div>
 
-            {/* 開始(分)：1カラム */}
+            {/* 開始(分) */}
             <div className="col-span-3 md:col-span-1">
               <label className="block text-sm font-medium mb-1">開始(分)</label>
               <select
@@ -634,7 +631,7 @@ export default function App() {
               </select>
             </div>
 
-            {/* 終了(時)：1カラム */}
+            {/* 終了(時) */}
             <div className="col-span-3 md:col-span-1">
               <label className="block text-sm font-medium mb-1">終了(時)</label>
               <select
@@ -646,7 +643,7 @@ export default function App() {
               </select>
             </div>
 
-            {/* 終了(分)：1カラム */}
+            {/* 終了(分) */}
             <div className="col-span-3 md:col-span-1">
               <label className="block text-sm font-medium mb-1">終了(分)</label>
               <select
@@ -658,8 +655,8 @@ export default function App() {
               </select>
             </div>
 
-            {/* Googleカレンダー登録チェック：2カラム */}
-            <div className="col-span-12 md:col-span-2 flex items-center gap-2">
+            {/* Googleカレンダー登録チェック（ボタンの直上） */}
+            <div className="col-span-12 flex items-center gap-2">
               <input
                 id="addToGoogleCal"
                 type="checkbox"
@@ -672,7 +669,7 @@ export default function App() {
               </label>
             </div>
 
-            {/* 追加ボタン：1カラム */}
+            {/* 追加ボタン */}
             <div className="col-span-12 md:col-span-1">
               <button
                 className="w-full rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90"
@@ -790,7 +787,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-gray-500 mt-6">
-          v3.0.1 – Googleログイン専用、追加時にカレンダー登録（任意）。開始/終了はプルダウン、一覧はメンバー見出しでグループ化。
+          v3.0.3 – Googleログイン専用、追加時にカレンダー登録（任意）。開始/終了はプルダウン、一覧はメンバー見出しでグループ化。
         </p>
       </main>
     </div>
