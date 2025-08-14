@@ -2,15 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * 1日のタスク管理ツール
- * v2.8.3
- * - 追加フォーム: 開始/終了 時刻 (24h) を「時」「分(0/15/30/45)」プルダウンで入力
- * - 工数(予定)の手動入力は廃止。一覧では開始⇄終了の差分から自動算出
- * - タスク名/カテゴリ/工数(予定)は一覧で編集不可のまま
- * - 振り返りはIME対応(変換中は保存しない/確定・デバウンス保存)
- * - Supabase: start_time/end_time/retrospective が無くてもフォールバックで動作
- * - UI: 時/分のセレクト幅を w-20 でコンパクト化
- * - 仕様: 「前日から複製」をオミット
+ * 1日のタスク管理ツール（Googleログイン専用）
+ * v3.0.1
+ * - 認証は Supabase OAuth（Google のみ）
+ * - 追加フォーム：開始/終了を「時/分(0/15/30/45)」プルダウン（select幅は w-20）
+ * - 「Googleカレンダーにも登録」チェックで primary へイベント作成
+ * - 一覧はメンバーごとに見出し行でグループ化
+ * - 編集可：実績/ステータス/振り返り（IME対応・デバウンス保存）
+ * - 仕様：前日から複製なし、メール+パスワードUIなし、ローカル保存なし
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -20,6 +19,7 @@ const supabase: SupabaseClient | null = SUPABASE_READY ? createClient(SUPABASE_U
 
 const CATEGORIES = ["広告運用", "SEO", "新規営業", "AF", "その他"] as const;
 const STATUS = ["未着手", "仕掛中", "完了"] as const;
+
 type Category = typeof CATEGORIES[number];
 type Status = typeof STATUS[number];
 
@@ -27,7 +27,7 @@ type Task = {
   id: string;
   name: string;
   category: Category;
-  plannedHours: number; // 表示は start/end の差分が優先（互換保持用）
+  plannedHours: number; // 表示は start/end の差分が優先（互換保持）
   actualHours: number;
   status: Status;
   date: string;       // YYYY-MM-DD
@@ -39,51 +39,11 @@ type Task = {
   endTime?: string | null;   // "HH:MM"
 };
 
-type LocalUser = { username: string };
 type CloudUser = { id: string; email: string; displayName: string };
-type User =
-  | { mode: "local"; local: LocalUser }
-  | { mode: "cloud"; cloud: CloudUser };
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i); // 0..23
 const M_OPTIONS = [0, 15, 30, 45];
-
-const isCloud = () => SUPABASE_READY;
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
-
-// ===== Local Storage =====
-const storageKey = (u: string) => `daily_tasks_v2__${u}`;
-function loadLocalTasks(username: string): Task[] {
-  try {
-    const raw = localStorage.getItem(storageKey(username));
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return [];
-    return (arr as Task[]).map((t) => ({ ...t, member: (t as any).member || username }));
-  } catch { return []; }
-}
-function loadLocalAll(): Task[] {
-  const all: Task[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)!;
-    if (!key.startsWith("daily_tasks_v2__")) continue;
-    const username = key.replace("daily_tasks_v2__", "");
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) continue;
-      const arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) continue;
-      for (const t of arr as Task[]) {
-        all.push({ ...t, member: (t as any).member || username });
-      }
-    } catch {}
-  }
-  return all;
-}
-function saveLocalTasks(username: string, tasks: Task[]) {
-  localStorage.setItem(storageKey(username), JSON.stringify(tasks));
-}
 
 // ===== Supabase helpers =====
 function noSuchColumn(err: any, col: string) {
@@ -95,19 +55,6 @@ function logErr(where: string, err: any) {
 }
 
 // ===== Supabase API =====
-async function cloudSignIn(email: string, password: string) {
-  if (!supabase) throw new Error("Supabase未設定");
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) { logErr("signIn", error); throw error; }
-  return data.user;
-}
-async function cloudSignUp(email: string, password: string) {
-  if (!supabase) throw new Error("Supabase未設定");
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) { logErr("signUp", error); throw error; }
-  return data.user;
-}
-
 async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const base: any = {
@@ -115,13 +62,12 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     member: t.member,
     name: t.name,
     category: t.category,
-    planned_hours: t.plannedHours, // 互換
+    planned_hours: t.plannedHours,
     actual_hours: t.actualHours,
     status: t.status,
     date: t.date,
     created_at: new Date(t.createdAt).toISOString(),
   };
-  // まず全部含めて試す
   const first = await supabase.from("tasks").insert({
     ...base,
     retrospective: t.retrospective ?? null,
@@ -129,7 +75,6 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     end_time: t.endTime ?? null,
   });
   if (first.error) {
-    // 列欠如は外してリトライ
     const payload: any = { ...base };
     if (!noSuchColumn(first.error, "retrospective")) payload.retrospective = t.retrospective ?? null;
     if (!noSuchColumn(first.error, "start_time")) payload.start_time = t.startTime ?? null;
@@ -149,7 +94,7 @@ async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>
     const o: any = {};
     if (p.actualHours !== undefined) o.actual_hours = p.actualHours;
     if (p.status !== undefined) o.status = p.status;
-    if (p.plannedHours !== undefined) o.planned_hours = p.plannedHours; // 互換
+    if (p.plannedHours !== undefined) o.planned_hours = p.plannedHours;
     if (p.retrospective !== undefined) o.retrospective = p.retrospective;
     if (p.startTime !== undefined) o.start_time = p.startTime;
     if (p.endTime !== undefined) o.end_time = p.endTime;
@@ -212,7 +157,7 @@ function toTask(r: any): Task {
   };
 }
 
-// ===== 時刻・工数の算出 =====
+// ===== 時刻・工数ユーティリティ =====
 function hhmmToMinutes(hhmm?: string | null): number | null {
   if (!hhmm) return null;
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
@@ -227,7 +172,7 @@ function diffHoursFromTimes(start?: string | null, end?: string | null): number 
   const e = hhmmToMinutes(end);
   if (s == null || e == null) return null;
   const diff = e - s;
-  if (diff <= 0) return 0; // 同日扱い（終了≦開始なら 0h）
+  if (diff <= 0) return 0;
   return Math.round((diff / 60) * 100) / 100;
 }
 function displayPlanned(t: Task): number {
@@ -239,74 +184,115 @@ function pad2(n: number) {
   return n.toString().padStart(2, "0");
 }
 
-// ===== ログインUI =====
+// ===== Googleカレンダー連携 =====
+async function createGoogleCalendarEvent(
+  date: string,
+  startTime: string | null | undefined,
+  endTime: string | null | undefined,
+  title: string,
+  description: string
+) {
+  if (!supabase) throw new Error("Supabase未設定");
+  const { data } = await supabase.auth.getSession();
+  // Supabase OAuth（Google）で得た access token
+  const accessToken = (data.session as any)?.provider_token as string | undefined;
+
+  if (!accessToken) {
+    throw new Error("Googleのアクセストークンが見つかりません。Googleでログインし直してください。");
+  }
+
+  const start = startTime ? new Date(`${date}T${startTime}:00`) : new Date(`${date}T09:00:00`);
+  const end = endTime ? new Date(`${date}T${endTime}:00`) : new Date(start.getTime() + 60 * 60 * 1000);
+  if (end <= start) end.setTime(start.getTime() + 60 * 60 * 1000);
+
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
+
+  const body = {
+    summary: title,
+    description,
+    start: { dateTime: start.toISOString(), timeZone },
+    end: { dateTime: end.toISOString(), timeZone },
+  };
+
+  const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google Calendar API Error: ${res.status} ${text}`);
+  }
+}
+
+// ===== Googleログイン画面 =====
 function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
-  const [isSignup, setIsSignup] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function submit() {
+  const signInWithGoogle = async () => {
     try {
       setLoading(true);
       setError(null);
       if (!SUPABASE_READY) throw new Error("SupabaseのURL/AnonKeyが未設定です。");
-      const u = isSignup ? await cloudSignUp(email, password) : await cloudSignIn(email, password);
-      if (!u) throw new Error("Auth failed");
-      onLoggedIn({ id: u.id, email: u.email || email, displayName: displayName || email.split("@")[0] });
+
+      const { error } = await supabase!.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          scopes: "https://www.googleapis.com/auth/calendar.events",
+          redirectTo: window.location.origin, // ローカル/Vercel双方OK
+        },
+      });
+      if (error) throw error;
+      // リダイレクト後は useEffect で session を拾う
     } catch (e: any) {
       setError(e.message || String(e));
-    } finally {
       setLoading(false);
     }
-  }
+  };
+
+  // リダイレクト後のセッションキャッチ
+  useEffect(() => {
+    (async () => {
+      if (!supabase) return;
+      const { data } = await supabase.auth.getSession();
+      const s = data.session;
+      if (s?.user) {
+        const u = s.user;
+        onLoggedIn({
+          id: u.id,
+          email: u.email || (u.user_metadata?.email as string) || "",
+          displayName:
+            (u.user_metadata?.full_name as string) ||
+            (u.user_metadata?.name as string) ||
+            (u.email?.split("@")[0] ?? "user"),
+        });
+      }
+    })();
+  }, [onLoggedIn]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6">
-        <h1 className="text-2xl font-semibold mb-4">1日のタスク管理 – クラウド同期</h1>
-        <p className="text-gray-600 mb-4">メールとパスワードで{isSignup ? "サインアップ" : "ログイン"}。</p>
-        <div className="grid gap-3">
-          <div>
-            <label className="block text-sm font-medium mb-1">メール</label>
-            <input className="w-full border rounded-xl px-3 py-2" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">パスワード</label>
-            <input type="password" className="w-full border rounded-xl px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">表示名（メンバー名）</label>
-            <input className="w-full border rounded-xl px-3 py-2" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="例: yamada" />
-          </div>
-          {error && <div className="text-red-600 text-sm">{error}</div>}
-          <button className="rounded-xl bg-black text-white py-2.5 font-medium hover:opacity-90" onClick={submit} disabled={loading}>
-            {loading ? "処理中..." : isSignup ? "サインアップ" : "ログイン"}
-          </button>
-          <button className="text-sm text-gray-600 hover:text-black" onClick={() => setIsSignup((v) => !v)}>
-            {isSignup ? "既にアカウントがあります" : "初めての方はこちら（サインアップ）"}
-          </button>
-          {!SUPABASE_READY && <p className="text-xs text-orange-600">※ Vercelの環境変数に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
-  const [username, setUsername] = useState("");
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6">
-        <h1 className="text-2xl font-semibold mb-4">1日のタスク管理 – ローカル</h1>
-        <p className="text-gray-600 mb-6">ユーザー名でログイン（ローカル保存のみ / サーバー不要）</p>
-        <label className="block text-sm font-medium mb-1">ユーザー名</label>
-        <input className="w-full border rounded-xl px-3 py-2" placeholder="例: yamada" value={username} onChange={(e) => setUsername(e.target.value.trim())} />
-        <button className="mt-4 w-full rounded-xl bg黒 text-white py-2.5 font-medium hover:opacity-90" onClick={() => username && onLoggedIn({ username })}>
-          ログイン
+      <div className="w-full max-w-md bg-white rounded-2xl shadow p-6 text-center">
+        <h1 className="text-2xl font-semibold mb-4">1日のタスク管理 – Googleログイン</h1>
+        <p className="text-gray-600 mb-4">Googleアカウントでログインし、カレンダー連携できます。</p>
+        {error && <div className="text-red-600 text-sm mb-3">{error}</div>}
+        <button
+          className="inline-flex items-center gap-2 rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90 disabled:opacity-60"
+          onClick={signInWithGoogle}
+          disabled={loading}
+        >
+          {loading ? "リダイレクト中..." : "Googleでログイン"}
         </button>
+        {!SUPABASE_READY && (
+          <p className="text-xs text-orange-600 mt-3">
+            ※ Vercelの環境変数に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください
+          </p>
+        )}
       </div>
     </div>
   );
@@ -358,50 +344,63 @@ function RetrospectiveCell({
 
 // ===== App =====
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<CloudUser | null>(null);
   const [date, setDate] = useState<string>(todayStr());
   const [tasksMine, setTasksMine] = useState<Task[]>([]);
   const [tasksAll, setTasksAll] = useState<Task[]>([]);
   const [viewMode, setViewMode] = useState<"mine" | "all">("mine");
   const [memberFilter, setMemberFilter] = useState<string>("all");
+  const [addToGoogleCalendar, setAddToGoogleCalendar] = useState<boolean>(false);
 
-  // 追加フォーム: 基本項目 + 時分セレクト
-  const [newTask, setNewTask] = useState<{
-    name: string;
-    category: Category;
-    sH: number; sM: number;
-    eH: number; eM: number;
-  }>({
-    name: "",
-    category: CATEGORIES[0],
-    sH: 9, sM: 0,
-    eH: 18, eM: 0,
-  });
+  // 起動時：既存セッションで自動ログイン + auth変更監視
+  useEffect(() => {
+    (async () => {
+      if (!supabase) return;
+      const { data } = await supabase.auth.getSession();
+      const s = data.session;
+      if (s?.user) {
+        const u = s.user;
+        setUser({
+          id: u.id,
+          email: u.email || (u.user_metadata?.email as string) || "",
+          displayName:
+            (u.user_metadata?.full_name as string) ||
+            (u.user_metadata?.name as string) ||
+            (u.email?.split("@")[0] ?? "user"),
+        });
+      }
+    })();
 
-  // 初期ロード
+    const sub = supabase?.auth.onAuthStateChange((_e, sess) => {
+      const u = sess?.user;
+      if (u) {
+        setUser({
+          id: u.id,
+          email: u.email || (u.user_metadata?.email as string) || "",
+          displayName:
+            (u.user_metadata?.full_name as string) ||
+            (u.user_metadata?.name as string) ||
+            (u.email?.split("@")[0] ?? "user"),
+        });
+      } else {
+        setUser(null);
+      }
+    });
+    return () => { sub?.data.subscription.unsubscribe(); };
+  }, []);
+
+  // 初期/ユーザ切替時にデータ取得
   useEffect(() => {
     (async () => {
       if (!user) return;
       try {
-        if (user.mode === "local") {
-          setTasksMine(loadLocalTasks(user.local.username));
-          setTasksAll(loadLocalAll());
-        } else {
-          const mine = await cloudFetchMine(user.cloud.id);
-          const all = await cloudFetchAll();
-          setTasksMine(mine);
-          setTasksAll(all);
-        }
+        const mine = await cloudFetchMine(user.id);
+        const all = await cloudFetchAll();
+        setTasksMine(mine);
+        setTasksAll(all);
       } catch (e) { console.error("[initial load]", e); }
     })();
-  }, [user && (user.mode === "local" ? user.local.username : user.cloud.id)]);
-
-  // Local保存
-  useEffect(() => {
-    if (!user || user.mode !== "local") return;
-    saveLocalTasks(user.local.username, tasksMine);
-    setTasksAll(loadLocalAll());
-  }, [tasksMine, user && user.mode === "local" ? user.local.username : null]);
+  }, [user?.id]);
 
   // 表示用
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
@@ -436,92 +435,111 @@ export default function App() {
   // 追加
   async function addTask() {
     if (!user) return;
-    if (!newTask.name.trim()) return;
-
+    const myName = user.displayName;
     const startTime = `${pad2(newTask.sH)}:${pad2(newTask.sM)}`;
     const endTime = `${pad2(newTask.eH)}:${pad2(newTask.eM)}`;
+
+    if (!newTask.name.trim()) return;
+
     const planned = diffHoursFromTimes(startTime, endTime) ?? 0;
 
     const base = {
       name: newTask.name.trim(),
       category: newTask.category,
-      plannedHours: planned, // 互換のため保存（表示はstart/end差分を使用）
+      plannedHours: planned,
       actualHours: 0,
       status: "未着手" as Status,
       date,
       createdAt: Date.now(),
-      member: user.mode === "local" ? user.local.username : user.cloud.displayName,
-      ownerId: user.mode === "cloud" ? user.cloud.id : undefined,
+      member: myName,
+      ownerId: user.id,
       retrospective: "",
       startTime,
       endTime,
     };
 
     try {
-      if (user.mode === "local") {
-        const withId: Task = { id: uid(), ...base };
-        setTasksMine((prev: Task[]) => [...prev, withId]);
-      } else {
-        await cloudInsertTask(base as Omit<Task, "id">, user.cloud.id);
-        const mine = await cloudFetchMine(user.cloud.id);
-        const all = await cloudFetchAll();
-        setTasksMine(mine);
-        setTasksAll(all);
+      await cloudInsertTask(base as Omit<Task, "id">, user.id);
+
+      // Googleカレンダー
+      if (addToGoogleCalendar) {
+        try {
+          await createGoogleCalendarEvent(
+            date,
+            startTime,
+            endTime,
+            base.name,
+            `カテゴリ: ${base.category}`
+          );
+        } catch (e) {
+          console.error("[google calendar]", e);
+          alert("Googleカレンダー登録に失敗しました。権限やログイン状態を確認してください。");
+        }
       }
-      setNewTask((v) => ({ ...v, name: "" })); // 入力値キープ（カテゴリ/時刻）
+
+      const mine = await cloudFetchMine(user.id);
+      const all = await cloudFetchAll();
+      setTasksMine(mine);
+      setTasksAll(all);
+
+      // 名前だけクリア（カテゴリ・時間はキープ）
+      setNewTask((v) => ({ ...v, name: "" }));
     } catch (e) {
       console.error("[addTask]", e);
       alert("タスク追加に失敗しました。コンソールのエラーを確認してください。");
     }
   }
 
-  // 更新（実績/ステータス/振り返りのみ。開始/終了・名前・カテゴリ・工数(予定)は編集禁止）
-  async function updateTask(id: string, patch: Partial<Task>, canEdit: boolean) {
-    if (!canEdit || !user) return;
+  // 更新（実績/ステータス/振り返りのみ）
+  async function updateTask(id: string, patch: Partial<Task>) {
+    if (!user) return;
     try {
-      if (user.mode === "local") {
-        setTasksMine((prev: Task[]) => prev.map((t) => (t.id === id ? ({ ...t, ...patch } as Task) : t)));
-      } else {
-        await cloudUpdateTask(id, user.cloud.id, patch);
-        const mine = await cloudFetchMine(user.cloud.id);
-        const all = await cloudFetchAll();
-        setTasksMine(mine);
-        setTasksAll(all);
-      }
+      await cloudUpdateTask(id, user.id, patch);
+      const mine = await cloudFetchMine(user.id);
+      const all = await cloudFetchAll();
+      setTasksMine(mine);
+      setTasksAll(all);
     } catch (e) {
       console.error("[updateTask]", e);
       alert("更新に失敗しました。");
     }
   }
 
-  async function deleteTask(id: string, canEdit: boolean) {
-    if (!canEdit || !user) return;
+  async function deleteTask(id: string) {
+    if (!user) return;
     try {
-      if (user.mode === "local") {
-        setTasksMine((prev: Task[]) => prev.filter((t) => t.id !== id));
-      } else {
-        await cloudDeleteTask(id, user.cloud.id);
-        const mine = await cloudFetchMine(user.cloud.id);
-        const all = await cloudFetchAll();
-        setTasksMine(mine);
-        setTasksAll(all);
-      }
+      await cloudDeleteTask(id, user.id);
+      const mine = await cloudFetchMine(user.id);
+      const all = await cloudFetchAll();
+      setTasksMine(mine);
+      setTasksAll(all);
     } catch (e) {
       console.error("[deleteTask]", e);
       alert("削除に失敗しました。");
     }
   }
 
-  function logout() { setUser(null); }
+  function logout() { supabase?.auth.signOut(); }
+
+  // 追加フォーム state
+  const [newTask, setNewTask] = useState<{
+    name: string;
+    category: Category;
+    sH: number; sM: number;
+    eH: number; eM: number;
+  }>({
+    name: "",
+    category: CATEGORIES[0],
+    sH: 9, sM: 0,
+    eH: 18, eM: 0,
+  });
 
   if (!user) {
-    return isCloud()
-      ? <CloudLogin onLoggedIn={(u) => setUser({ mode: "cloud", cloud: u })} />
-      : <LocalLogin onLoggedIn={(u) => setUser({ mode: "local", local: u })} />;
+    return <CloudLogin onLoggedIn={(u) => setUser(u)} />;
   }
 
-  const myName = user.mode === "local" ? user.local.username : user.cloud.displayName;
-  const canEditTask = (t: Task) => (user.mode === "local" ? t.member === myName : t.ownerId === user.cloud.id);
+  const myName = user.displayName;
+  const canEditTask = (t: Task) => t.ownerId === user.id;
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
@@ -532,16 +550,14 @@ export default function App() {
             <h1 className="text-lg sm:text-xl font-semibold">1日のタスク管理</h1>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-600">
-              {myName}{isCloud() ? "（クラウド）" : "（ローカル）"}
-            </span>
+            <span className="text-sm text-gray-600">{myName}（Google）</span>
             <button className="text-sm text-gray-500 hover:text-black" onClick={logout}>ログアウト</button>
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* フィルタ（前日から複製ボタンは削除） */}
+        {/* フィルタ */}
         <div className="flex flex-col md:flex-row md:items-end gap-3 md:gap-4 mb-6">
           <div>
             <label className="block text-sm font-medium mb-1">対象日</label>
@@ -565,7 +581,7 @@ export default function App() {
           <div className="flex-1" />
         </div>
 
-        {/* 追加フォーム（工数予定は無くし、時刻入力のみ） */}
+        {/* 追加フォーム */}
         <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
@@ -642,8 +658,22 @@ export default function App() {
               </select>
             </div>
 
+            {/* Googleカレンダー登録チェック：2カラム */}
+            <div className="col-span-12 md:col-span-2 flex items-center gap-2">
+              <input
+                id="addToGoogleCal"
+                type="checkbox"
+                className="w-4 h-4"
+                checked={addToGoogleCalendar}
+                onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
+              />
+              <label htmlFor="addToGoogleCal" className="text-sm text-gray-700">
+                Googleカレンダーにも登録
+              </label>
+            </div>
+
             {/* 追加ボタン：1カラム */}
-            <div className="col-span-6 md:col-span-1">
+            <div className="col-span-12 md:col-span-1">
               <button
                 className="w-full rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90"
                 onClick={addTask}
@@ -682,12 +712,12 @@ export default function App() {
                 {grouped.length === 0 ? (
                   <tr><td className="p-4 text-gray-500" colSpan={9}>該当タスクがありません。</td></tr>
                 ) : (
-                  grouped.map(([member, rows]) => (
-                    <tbody key={member}>
-                      <tr className="bg-gray-100 border-b">
+                  grouped.flatMap(([member, rows]) => {
+                    return [
+                      <tr key={`header-${member}`} className="bg-gray-100 border-b">
                         <td className="p-2 font-semibold" colSpan={9}>👤 {member}</td>
-                      </tr>
-                      {rows.map((row) => {
+                      </tr>,
+                      ...rows.map((row) => {
                         const canEdit = canEditTask(row);
                         const planned = displayPlanned(row);
                         return (
@@ -713,7 +743,7 @@ export default function App() {
                                   type="number" min={0} step={0.25}
                                   className="w-full border rounded-lg px-2 py-1"
                                   value={row.actualHours}
-                                  onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) }, true)}
+                                  onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) })}
                                 />
                               ) : (
                                 <div className="w-full border rounded-lg px-2 py-1 bg-gray-50 text-right">
@@ -726,7 +756,7 @@ export default function App() {
                                 <select
                                   className="w-full border rounded-lg px-2 py-1"
                                   value={row.status}
-                                  onChange={(e) => updateTask(row.id, { status: e.target.value as Status }, true)}
+                                  onChange={(e) => updateTask(row.id, { status: e.target.value as Status })}
                                 >
                                   {STATUS.map((s) => <option key={s} value={s}>{s}</option>)}
                                 </select>
@@ -738,21 +768,21 @@ export default function App() {
                               <RetrospectiveCell
                                 initial={row.retrospective ?? ""}
                                 canEdit={canEdit}
-                                onSave={(val) => updateTask(row.id, { retrospective: val }, true)}
+                                onSave={(val) => updateTask(row.id, { retrospective: val })}
                               />
                             </td>
                             <td className="p-2 align-top w-16 text-right">
                               {canEdit ? (
-                                <button className="text-red-600 hover:underline" onClick={() => deleteTask(row.id, true)} title="削除">
+                                <button className="text-red-600 hover:underline" onClick={() => deleteTask(row.id)} title="削除">
                                   削除
                                 </button>
                               ) : <span className="text-gray-400">-</span>}
                             </td>
                           </tr>
                         );
-                      })}
-                    </tbody>
-                  ))
+                      }),
+                    ];
+                  })
                 )}
               </tbody>
             </table>
@@ -760,21 +790,9 @@ export default function App() {
         </div>
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.8.3 – 追加時に開始/終了を選択、工数(予定)は自動算出。前日から複製を削除。
+          v3.0.1 – Googleログイン専用、追加時にカレンダー登録（任意）。開始/終了はプルダウン、一覧はメンバー見出しでグループ化。
         </p>
       </main>
     </div>
   );
 }
-
-// ===== Self test =====
-(function selfTest() {
-  try {
-    console.assert(/\d{4}-\d{2}-\d{2}/.test(todayStr()), "todayStr");
-    const t = diffHoursFromTimes("09:00", "18:15"); // 9.25
-    console.assert(Math.abs((t ?? 0) - 9.25) < 1e-9, "diff 9:00→18:15");
-    const bad = diffHoursFromTimes("18:00", "09:00"); // 0
-    console.assert((bad ?? -1) === 0, "end<=start => 0");
-    const setU = new Set<string>(); for (let i = 0; i < 50; i++) setU.add(uid()); console.assert(setU.size === 50, "uid uniqueness");
-  } catch (e) { console.warn("Self test failed:", e); }
-})();
