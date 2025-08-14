@@ -78,15 +78,15 @@ function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLBut
   );
 }
 function CategoryPill({ value }: { value: Category }) {
-  const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium";
+  const base = "flex items-center justify-center min-h-[2.5rem] rounded-xl border px-3 py-1 text-sm font-medium";
   const map: Record<Category, string> = {
-    "広告運用": `${base} bg-indigo-50 text-indigo-700 border border-indigo-200`,
-    "SEO": `${base} bg-emerald-50 text-emerald-700 border border-emerald-200`,
-    "新規営業": `${base} bg-fuchsia-50 text-fuchsia-700 border border-fuchsia-200`,
-    "AF": `${base} bg-amber-50 text-amber-700 border border-amber-200`,
-    "その他": `${base} bg-slate-50 text-slate-700 border border-slate-200`,
+    "広告運用": `${base} bg-indigo-50 text-indigo-700 border-indigo-200`,
+    "SEO": `${base} bg-emerald-50 text-emerald-700 border-emerald-200`,
+    "新規営業": `${base} bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200`,
+    "AF": `${base} bg-amber-50 text-amber-700 border-amber-200`,
+    "その他": `${base} bg-slate-50 text-slate-700 border-slate-200`,
   };
-  return <span className={map[value]}>{value}</span>;
+  return <div className={map[value]}>{value}</div>;
 }
 function StatusPill({ value }: { value: Status }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
