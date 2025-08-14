@@ -3,13 +3,14 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール
- * v2.8.2
- * - 追加フォーム: 開始/終了 時刻 (24h) を「時」「分(0/15/30/45)」のプルダウンで入力
+ * v2.8.3
+ * - 追加フォーム: 開始/終了 時刻 (24h) を「時」「分(0/15/30/45)」プルダウンで入力
  * - 工数(予定)の手動入力は廃止。一覧では開始⇄終了の差分から自動算出
  * - タスク名/カテゴリ/工数(予定)は一覧で編集不可のまま
  * - 振り返りはIME対応(変換中は保存しない/確定・デバウンス保存)
  * - Supabase: start_time/end_time/retrospective が無くてもフォールバックで動作
  * - UI: 時/分のセレクト幅を w-20 でコンパクト化
+ * - 仕様: 「前日から複製」をオミット
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -26,7 +27,7 @@ type Task = {
   id: string;
   name: string;
   category: Category;
-  plannedHours: number; // 互換用に保持はするが、表示は start/end の差分を優先
+  plannedHours: number; // 表示は start/end の差分が優先（互換保持用）
   actualHours: number;
   status: Status;
   date: string;       // YYYY-MM-DD
@@ -45,7 +46,6 @@ type User =
   | { mode: "cloud"; cloud: CloudUser };
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
-// 時/分プルダウン
 const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i); // 0..23
 const M_OPTIONS = [0, 15, 30, 45];
 
@@ -227,7 +227,7 @@ function diffHoursFromTimes(start?: string | null, end?: string | null): number 
   const e = hhmmToMinutes(end);
   if (s == null || e == null) return null;
   const diff = e - s;
-  if (diff <= 0) return 0; // 同日扱い。終了≦開始なら0h
+  if (diff <= 0) return 0; // 同日扱い（終了≦開始なら 0h）
   return Math.round((diff / 60) * 100) / 100;
 }
 function displayPlanned(t: Task): number {
@@ -304,7 +304,7 @@ function LocalLogin({ onLoggedIn }: { onLoggedIn: (u: LocalUser) => void }) {
         <p className="text-gray-600 mb-6">ユーザー名でログイン（ローカル保存のみ / サーバー不要）</p>
         <label className="block text-sm font-medium mb-1">ユーザー名</label>
         <input className="w-full border rounded-xl px-3 py-2" placeholder="例: yamada" value={username} onChange={(e) => setUsername(e.target.value.trim())} />
-        <button className="mt-4 w-full rounded-xl bg-black text-white py-2.5 font-medium hover:opacity-90" onClick={() => username && onLoggedIn({ username })}>
+        <button className="mt-4 w-full rounded-xl bg黒 text-white py-2.5 font-medium hover:opacity-90" onClick={() => username && onLoggedIn({ username })}>
           ログイン
         </button>
       </div>
@@ -468,8 +468,7 @@ export default function App() {
         setTasksMine(mine);
         setTasksAll(all);
       }
-      // 入力値キープ（カテゴリ・時刻）は残し、名前だけクリア
-      setNewTask((v) => ({ ...v, name: "" }));
+      setNewTask((v) => ({ ...v, name: "" })); // 入力値キープ（カテゴリ/時刻）
     } catch (e) {
       console.error("[addTask]", e);
       alert("タスク追加に失敗しました。コンソールのエラーを確認してください。");
@@ -542,7 +541,7 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* フィルタ */}
+        {/* フィルタ（前日から複製ボタンは削除） */}
         <div className="flex flex-col md:flex-row md:items-end gap-3 md:gap-4 mb-6">
           <div>
             <label className="block text-sm font-medium mb-1">対象日</label>
@@ -564,142 +563,100 @@ export default function App() {
             </div>
           )}
           <div className="flex-1" />
-          <button
-            className="rounded-xl border px-3 py-2 hover:bg-white"
-            title="前日タスクを複製（実績・振り返りはリセット）"
-            onClick={() => {
-              if (user.mode === "local") {
-                const dt = new Date(date); dt.setDate(dt.getDate() - 1);
-                const y = dt.toISOString().slice(0, 10);
-                const yTasks = tasksMine.filter((t) => t.date === y);
-                if (!yTasks.length) return;
-                const clones: Task[] = yTasks.map((t) => ({
-                  ...t, id: uid(), date,
-                  actualHours: 0, status: "未着手",
-                  createdAt: Date.now(), retrospective: "",
-                  startTime: t.startTime ?? null,
-                  endTime: t.endTime ?? null,
-                  plannedHours: displayPlanned(t), // 互換（表示は時刻差分）
-                }));
-                setTasksMine((prev: Task[]) => [...prev, ...clones]);
-              } else {
-                (async () => {
-                  const dt = new Date(date); dt.setDate(dt.getDate() - 1);
-                  const y = dt.toISOString().slice(0, 10);
-                  const yTasks = tasksMine.filter((t) => t.date === y);
-                  for (const t of yTasks) {
-                    const planned = displayPlanned(t);
-                    await cloudInsertTask({
-                      name: t.name, category: t.category,
-                      plannedHours: planned, actualHours: 0,
-                      status: "未着手", date, createdAt: Date.now(),
-                      member: myName, ownerId: user.cloud.id,
-                      retrospective: "", startTime: t.startTime ?? null, endTime: t.endTime ?? null
-                    } as Omit<Task, "id">, user.cloud.id);
-                  }
-                  const mine = await cloudFetchMine(user.cloud.id);
-                  const all = await cloudFetchAll();
-                  setTasksMine(mine); setTasksAll(all);
-                })();
-              }
-            }}
-          >前日から複製</button>
         </div>
 
-        {/* 追加フォーム（工数予定は無くし、時刻入力を追加） */}
-       {/* 追加フォーム（工数予定は無くし、時刻入力を追加） */}
-<div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
-  <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
+        {/* 追加フォーム（工数予定は無くし、時刻入力のみ） */}
+        <div className="bg-white rounded-2xl shadow p-4 md:p-5 mb-6">
+          <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
-  {/* 12分割で1行に詰める。items-end でボタン位置も揃える */}
-  <div className="grid grid-cols-12 gap-3 items-end">
-    {/* タスク名：広めに4カラム */}
-    <div className="col-span-4">
-      <label className="block text-sm font-medium mb-1">タスク名</label>
-      <input
-        className="w-full border rounded-xl px-3 py-2"
-        placeholder="例: Google広告 週次レポート作成"
-        value={newTask.name}
-        onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
-      />
-    </div>
+          {/* 12分割で1行に詰める */}
+          <div className="grid grid-cols-12 gap-3 items-end">
+            {/* タスク名：4カラム */}
+            <div className="col-span-12 md:col-span-4">
+              <label className="block text-sm font-medium mb-1">タスク名</label>
+              <input
+                className="w-full border rounded-xl px-3 py-2"
+                placeholder="例: Google広告 週次レポート作成"
+                value={newTask.name}
+                onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
+              />
+            </div>
 
-    {/* カテゴリ：2カラム */}
-    <div className="col-span-2">
-      <label className="block text-sm font-medium mb-1">カテゴリ</label>
-      <select
-        className="w-full border rounded-xl px-3 py-2"
-        value={newTask.category}
-        onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
-      >
-        {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-      </select>
-    </div>
+            {/* カテゴリ：2カラム */}
+            <div className="col-span-6 md:col-span-2">
+              <label className="block text-sm font-medium mb-1">カテゴリ</label>
+              <select
+                className="w-full border rounded-xl px-3 py-2"
+                value={newTask.category}
+                onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
+              >
+                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
 
-    {/* 開始(時)：1カラム（select自体は w-20 でコンパクト） */}
-    <div className="col-span-1">
-      <label className="block text-sm font-medium mb-1">開始(時)</label>
-      <select
-        className="border rounded-xl px-3 py-2 w-20"
-        value={newTask.sH}
-        onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
-      >
-        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-      </select>
-    </div>
+            {/* 開始(時)：1カラム */}
+            <div className="col-span-3 md:col-span-1">
+              <label className="block text-sm font-medium mb-1">開始(時)</label>
+              <select
+                className="border rounded-xl px-3 py-2 w-20"
+                value={newTask.sH}
+                onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
+              >
+                {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+              </select>
+            </div>
 
-    {/* 開始(分)：1カラム */}
-    <div className="col-span-1">
-      <label className="block text-sm font-medium mb-1">開始(分)</label>
-      <select
-        className="border rounded-xl px-3 py-2 w-20"
-        value={newTask.sM}
-        onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
-      >
-        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-      </select>
-    </div>
+            {/* 開始(分)：1カラム */}
+            <div className="col-span-3 md:col-span-1">
+              <label className="block text-sm font-medium mb-1">開始(分)</label>
+              <select
+                className="border rounded-xl px-3 py-2 w-20"
+                value={newTask.sM}
+                onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
+              >
+                {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+              </select>
+            </div>
 
-    {/* 終了(時)：1カラム */}
-    <div className="col-span-1">
-      <label className="block text-sm font-medium mb-1">終了(時)</label>
-      <select
-        className="border rounded-xl px-3 py-2 w-20"
-        value={newTask.eH}
-        onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
-      >
-        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-      </select>
-    </div>
+            {/* 終了(時)：1カラム */}
+            <div className="col-span-3 md:col-span-1">
+              <label className="block text-sm font-medium mb-1">終了(時)</label>
+              <select
+                className="border rounded-xl px-3 py-2 w-20"
+                value={newTask.eH}
+                onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
+              >
+                {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+              </select>
+            </div>
 
-    {/* 終了(分)：1カラム */}
-    <div className="col-span-1">
-      <label className="block text-sm font-medium mb-1">終了(分)</label>
-      <select
-        className="border rounded-xl px-3 py-2 w-20"
-        value={newTask.eM}
-        onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
-      >
-        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-      </select>
-    </div>
+            {/* 終了(分)：1カラム */}
+            <div className="col-span-3 md:col-span-1">
+              <label className="block text-sm font-medium mb-1">終了(分)</label>
+              <select
+                className="border rounded-xl px-3 py-2 w-20"
+                value={newTask.eM}
+                onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
+              >
+                {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+              </select>
+            </div>
 
-    {/* 追加ボタン：1カラム */}
-    <div className="col-span-1">
-      <button
-        className="w-full rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90"
-        onClick={addTask}
-      >
-        追加
-      </button>
-    </div>
-  </div>
-</div>
-
+            {/* 追加ボタン：1カラム */}
+            <div className="col-span-6 md:col-span-1">
+              <button
+                className="w-full rounded-xl bg-black text-white px-4 py-2.5 font-medium hover:opacity-90"
+                onClick={addTask}
+              >
+                追加
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* 一覧 */}
         <div className="bg-white rounded-2xl shadow overflow-hidden">
-          <div className="px-4 py-3 border-b flex itemsセンター justify-between">
+          <div className="px-4 py-3 border-b flex items-center justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
             <div className="text-sm text-gray-600">
               合計: 予定 {totals.planned.toFixed(2)}h / 実績 {totals.actual.toFixed(2)}h
@@ -726,8 +683,8 @@ export default function App() {
                   <tr><td className="p-4 text-gray-500" colSpan={9}>該当タスクがありません。</td></tr>
                 ) : (
                   grouped.map(([member, rows]) => (
-                    <>
-                      <tr key={`header-${member}`} className="bg-gray-100 border-b">
+                    <tbody key={member}>
+                      <tr className="bg-gray-100 border-b">
                         <td className="p-2 font-semibold" colSpan={9}>👤 {member}</td>
                       </tr>
                       {rows.map((row) => {
@@ -794,7 +751,7 @@ export default function App() {
                           </tr>
                         );
                       })}
-                    </>
+                    </tbody>
                   ))
                 )}
               </tbody>
@@ -803,7 +760,8 @@ export default function App() {
         </div>
 
         <p className="text-xs text-gray-500 mt-6">
-          v2.8.2 – 追加時に開始/終了を選択、工数(予定)は自動算出。セレクト幅をw-20に最適化。</p>
+          v2.8.3 – 追加時に開始/終了を選択、工数(予定)は自動算出。前日から複製を削除。
+        </p>
       </main>
     </div>
   );
