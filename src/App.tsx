@@ -3,15 +3,12 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
- * v3.1.0 (UI Refresh)
- * - ガラスヘッダー + グラデーション背景
- * - カードUI、フラット＋立体のバランス、繊細な境界線
- * - ステータス/カテゴリはピル表示
- * - 入力UIはラベリング/フォーカスリング/ホバーを調整
- * - 開始/終了のselectをコンパクト＆等幅に
- * - 一覧の視認性/密度を改善、行ホバー/セパレータ、合計表示をチップ化
- *
- * 機能面は前回版（Google Calendar連携、メンバーでグルーピング、IME対応の振り返り）を踏襲
+ * v3.2.0
+ * - Google OAuth (Supabase) 前提、メール+PW UIは無し
+ * - 追加フォーム: 開始/終了（時・分 0/15/30/45）プルダウン、等幅・間隔調整済み
+ * - 「Googleカレンダーにも登録」チェック（追加ボタン直上）
+ * - 一覧: メンバー見出しでグループ化、IME対応の「振り返り」
+ * - 操作列: ヘッダーの「操作」タイトル非表示、各行の削除は「×」アイコン
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -29,7 +26,7 @@ type Task = {
   id: string;
   name: string;
   category: Category;
-  plannedHours: number; // 表示は start/end の差分が優先（互換保持）
+  plannedHours: number;
   actualHours: number;
   status: Status;
   date: string;       // YYYY-MM-DD
@@ -44,10 +41,10 @@ type Task = {
 type CloudUser = { id: string; email: string; displayName: string };
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
-const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i); // 0..23
+const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i);
 const M_OPTIONS = [0, 15, 30, 45];
 
-// ===== 小UIコンポーネント =====
+/* ---------- UI primitives ---------- */
 function Chip({ children, className = "" }: { children: any; className?: string }) {
   return (
     <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${className}`}>
@@ -55,7 +52,33 @@ function Chip({ children, className = "" }: { children: any; className?: string 
     </span>
   );
 }
-
+function FieldLabel({ children }: { children: any }) {
+  return <label className="block text-xs font-semibold text-slate-600 mb-1.5">{children}</label>;
+}
+function Input({ className = "", ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
+      {...props}
+    />
+  );
+}
+function Select({ className = "", ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
+      {...props}
+    />
+  );
+}
+function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center rounded-xl bg-slate-900 text-white px-4 py-2.5 text-sm font-semibold shadow-sm hover:opacity-95 active:opacity-90 focus:outline-none focus:ring-4 focus:ring-slate-200 transition ${className}`}
+      {...props}
+    />
+  );
+}
 function CategoryPill({ value }: { value: Category }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium";
   const map: Record<Category, string> = {
@@ -67,7 +90,6 @@ function CategoryPill({ value }: { value: Category }) {
   };
   return <span className={map[value]}>{value}</span>;
 }
-
 function StatusPill({ value }: { value: Status }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
   const map: Record<Status, string> = {
@@ -78,38 +100,7 @@ function StatusPill({ value }: { value: Status }) {
   return <span className={map[value]}>{value}</span>;
 }
 
-function FieldLabel({ children }: { children: any }) {
-  return <label className="block text-xs font-semibold text-slate-600 mb-1.5">{children}</label>;
-}
-
-function Input({ className = "", ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
-      {...props}
-    />
-  );
-}
-
-function Select({ className = "", ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
-      {...props}
-    />
-  );
-}
-
-function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      className={`inline-flex items-center justify-center rounded-xl bg-slate-900 text-white px-4 py-2.5 text-sm font-semibold shadow-sm hover:opacity-95 active:opacity-90 focus:outline-none focus:ring-4 focus:ring-slate-200 transition ${className}`}
-      {...props}
-    />
-  );
-}
-
-// ===== Supabase helpers =====
+/* ---------- Supabase helpers ---------- */
 function noSuchColumn(err: any, col: string) {
   const msg = (err?.message || err?.hint || err?.details || "").toString().toLowerCase();
   return msg.includes(col.toLowerCase()) && (msg.includes("does not exist") || msg.includes("column"));
@@ -118,7 +109,7 @@ function logErr(where: string, err: any) {
   console.error(`[${where}]`, { message: err?.message, details: err?.details, hint: err?.hint, code: err?.code, err });
 }
 
-// ===== DB I/O =====
+/* ---------- DB I/O ---------- */
 async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const base: any = {
@@ -151,7 +142,6 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     if (retry.error) { logErr("insert(retry)", retry.error); throw retry.error; }
   }
 }
-
 async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>) {
   if (!supabase) throw new Error("Supabase未設定");
   const toDb = (p: Partial<Task>) => {
@@ -183,13 +173,11 @@ async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>
     }
   }
 }
-
 async function cloudDeleteTask(id: string, ownerId: string) {
   if (!supabase) throw new Error("Supabase未設定");
   const { error } = await supabase.from("tasks").delete().eq("id", id).eq("owner_id", ownerId);
   if (error) { logErr("delete", error); throw error; }
 }
-
 async function cloudFetchAll(): Promise<Task[]> {
   if (!supabase) throw new Error("Supabase未設定");
   const { data, error } = await supabase.from("tasks").select("*");
@@ -202,7 +190,6 @@ async function cloudFetchMine(ownerId: string): Promise<Task[]> {
   if (error) { logErr("fetchMine", error); throw error; }
   return (data || []).map((r: any) => toTask(r));
 }
-
 function toTask(r: any): Task {
   return {
     id: r.id,
@@ -221,7 +208,7 @@ function toTask(r: any): Task {
   };
 }
 
-// ===== 時刻・工数ユーティリティ =====
+/* ---------- 時刻・計算 ---------- */
 function hhmmToMinutes(hhmm?: string | null): number | null {
   if (!hhmm) return null;
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
@@ -248,7 +235,7 @@ function pad2(n: number) {
   return n.toString().padStart(2, "0");
 }
 
-// ===== Googleカレンダー連携 =====
+/* ---------- Google Calendar ---------- */
 async function createGoogleCalendarEvent(
   date: string,
   startTime: string | null | undefined,
@@ -259,10 +246,7 @@ async function createGoogleCalendarEvent(
   if (!supabase) throw new Error("Supabase未設定");
   const { data } = await supabase.auth.getSession();
   const accessToken = (data.session as any)?.provider_token as string | undefined;
-
-  if (!accessToken) {
-    throw new Error("Googleのアクセストークンが見つかりません。Googleでログインし直してください。");
-  }
+  if (!accessToken) throw new Error("Googleのアクセストークンが見つかりません。再ログインしてください。");
 
   const start = startTime ? new Date(`${date}T${startTime}:00`) : new Date(`${date}T09:00:00`);
   const end = endTime ? new Date(`${date}T${endTime}:00`) : new Date(start.getTime() + 60 * 60 * 1000);
@@ -270,29 +254,20 @@ async function createGoogleCalendarEvent(
 
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
 
-  const body = {
-    summary: title,
-    description,
-    start: { dateTime: start.toISOString(), timeZone },
-    end: { dateTime: end.toISOString(), timeZone },
-  };
-
   const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      summary: title,
+      description,
+      start: { dateTime: start.toISOString(), timeZone },
+      end: { dateTime: end.toISOString(), timeZone },
+    }),
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Google Calendar API Error: ${res.status} ${text}`);
-  }
+  if (!res.ok) throw new Error(`Google Calendar API Error: ${res.status} ${await res.text()}`);
 }
 
-// ===== Googleログイン画面 =====
+/* ---------- Login ---------- */
 function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -302,12 +277,11 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
       setLoading(true);
       setError(null);
       if (!SUPABASE_READY) throw new Error("SupabaseのURL/AnonKeyが未設定です。");
-
       const { error } = await supabase!.auth.signInWithOAuth({
         provider: "google",
         options: {
           scopes: "https://www.googleapis.com/auth/calendar.events",
-          redirectTo: window.location.origin, // ローカル/Vercel双方OK
+          redirectTo: window.location.origin,
         },
       });
       if (error) throw error;
@@ -317,7 +291,6 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
     }
   };
 
-  // リダイレクト後のセッションキャッチ
   useEffect(() => {
     (async () => {
       if (!supabase) return;
@@ -348,16 +321,14 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
           {loading ? "リダイレクト中..." : "Googleでログイン"}
         </Button>
         {!SUPABASE_READY && (
-          <p className="text-xs text-orange-600 mt-3">
-            ※ Vercel環境に VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください
-          </p>
+          <p className="text-xs text-orange-600 mt-3">※ Vercelに VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY を設定してください</p>
         )}
       </div>
     </div>
   );
 }
 
-// ===== 振り返りセル（IME対応・デバウンス保存） =====
+/* ---------- 振り返りセル（IME対応） ---------- */
 function RetrospectiveCell({
   initial,
   canEdit,
@@ -401,7 +372,7 @@ function RetrospectiveCell({
   );
 }
 
-// ===== App =====
+/* ---------- App ---------- */
 export default function App() {
   const [user, setUser] = useState<CloudUser | null>(null);
   const [date, setDate] = useState<string>(todayStr());
@@ -411,7 +382,7 @@ export default function App() {
   const [memberFilter, setMemberFilter] = useState<string>("all");
   const [addToGoogleCalendar, setAddToGoogleCalendar] = useState<boolean>(false);
 
-  // 起動時：既存セッションで自動ログイン + auth変更監視
+  // セッション復元 + 監視
   useEffect(() => {
     (async () => {
       if (!supabase) return;
@@ -448,7 +419,7 @@ export default function App() {
     return () => { sub?.data.subscription.unsubscribe(); };
   }, []);
 
-  // 初期/ユーザ切替時にデータ取得
+  // データ取得
   useEffect(() => {
     (async () => {
       if (!user) return;
@@ -461,7 +432,7 @@ export default function App() {
     })();
   }, [user?.id]);
 
-  // 表示用
+  // 表示計算
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
   const members = useMemo(() => {
     const set = new Set<string>();
@@ -510,7 +481,6 @@ export default function App() {
     const myName = user.displayName;
     const startTime = `${pad2(newTask.sH)}:${pad2(newTask.sM)}`;
     const endTime = `${pad2(newTask.eH)}:${pad2(newTask.eM)}`;
-
     if (!newTask.name.trim()) return;
 
     const planned = diffHoursFromTimes(startTime, endTime) ?? 0;
@@ -533,12 +503,9 @@ export default function App() {
     try {
       await cloudInsertTask(base as Omit<Task, "id">, user.id);
 
-      // Googleカレンダー登録（任意）
       if (addToGoogleCalendar) {
         try {
-          await createGoogleCalendarEvent(
-            date, startTime, endTime, base.name, `カテゴリ: ${base.category}`
-          );
+          await createGoogleCalendarEvent(date, startTime, endTime, base.name, `カテゴリ: ${base.category}`);
         } catch (e) {
           console.error("[google calendar]", e);
           alert("Googleカレンダー登録に失敗しました。権限やログイン状態を確認してください。");
@@ -556,7 +523,6 @@ export default function App() {
     }
   }
 
-  // 更新（実績/ステータス/振り返りのみ）
   async function updateTask(id: string, patch: Partial<Task>) {
     if (!user) return;
     try {
@@ -587,9 +553,7 @@ export default function App() {
 
   function logout() { supabase?.auth.signOut(); }
 
-  if (!user) {
-    return <CloudLogin onLoggedIn={(u) => setUser(u)} />;
-  }
+  if (!user) return <CloudLogin onLoggedIn={(u) => setUser(u)} />;
 
   const myName = user.displayName;
   const canEditTask = (t: Task) => t.ownerId === user.id;
@@ -651,94 +615,90 @@ export default function App() {
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
           <div className="grid grid-cols-12 gap-4 items-end">
-  {/* タスク名 */}
-  <div className="col-span-12 md:col-span-5">
-    <FieldLabel>タスク名</FieldLabel>
-    <Input
-      placeholder="例: Google広告 週次レポート作成"
-      value={newTask.name}
-      onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
-    />
-  </div>
+            {/* タスク名 */}
+            <div className="col-span-12 md:col-span-5">
+              <FieldLabel>タスク名</FieldLabel>
+              <Input
+                placeholder="例: Google広告 週次レポート作成"
+                value={newTask.name}
+                onChange={(e) => setNewTask((v) => ({ ...v, name: e.target.value }))}
+              />
+            </div>
 
-  {/* カテゴリ */}
-  <div className="col-span-6 md:col-span-2">
-    <FieldLabel>カテゴリ</FieldLabel>
-    <Select
-      value={newTask.category}
-      onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
-    >
-      {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-    </Select>
-  </div>
+            {/* カテゴリ */}
+            <div className="col-span-6 md:col-span-2">
+              <FieldLabel>カテゴリ</FieldLabel>
+              <Select
+                value={newTask.category}
+                onChange={(e) => setNewTask((v) => ({ ...v, category: e.target.value as Category }))}
+              >
+                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </Select>
+            </div>
 
-  {/* 時間選択（開始・終了） */}
-  <div className="col-span-6 md:col-span-5 flex flex-wrap gap-3">
-    <div>
-      <FieldLabel>開始(時)</FieldLabel>
-      <Select
-        className="w-20"
-        value={newTask.sH}
-        onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
-      >
-        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-      </Select>
-    </div>
+            {/* 時間選択（開始・終了） */}
+            <div className="col-span-6 md:col-span-5 flex flex-wrap gap-3">
+              <div>
+                <FieldLabel>開始(時)</FieldLabel>
+                <Select
+                  className="w-24"
+                  value={newTask.sH}
+                  onChange={(e) => setNewTask((v) => ({ ...v, sH: parseInt(e.target.value, 10) }))}
+                >
+                  {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+                </Select>
+              </div>
+              <div>
+                <FieldLabel>開始(分)</FieldLabel>
+                <Select
+                  className="w-24"
+                  value={newTask.sM}
+                  onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
+                >
+                  {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+                </Select>
+              </div>
+              <div>
+                <FieldLabel>終了(時)</FieldLabel>
+                <Select
+                  className="w-24"
+                  value={newTask.eH}
+                  onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
+                >
+                  {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
+                </Select>
+              </div>
+              <div>
+                <FieldLabel>終了(分)</FieldLabel>
+                <Select
+                  className="w-24"
+                  value={newTask.eM}
+                  onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
+                >
+                  {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
+                </Select>
+              </div>
+            </div>
 
-    <div>
-      <FieldLabel>開始(分)</FieldLabel>
-      <Select
-        className="w-20"
-        value={newTask.sM}
-        onChange={(e) => setNewTask((v) => ({ ...v, sM: parseInt(e.target.value, 10) }))}
-      >
-        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-      </Select>
-    </div>
+            {/* Googleカレンダー登録チェック（ボタンの直上） */}
+            <div className="col-span-12">
+              <label className="inline-flex items-center gap-2 select-none">
+                <input
+                  id="addToGoogleCal"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-200"
+                  checked={addToGoogleCalendar}
+                  onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
+                />
+                <span className="text-sm text-slate-700">Googleカレンダーにも登録</span>
+              </label>
+            </div>
 
-    <div>
-      <FieldLabel>終了(時)</FieldLabel>
-      <Select
-        className="w-20"
-        value={newTask.eH}
-        onChange={(e) => setNewTask((v) => ({ ...v, eH: parseInt(e.target.value, 10) }))}
-      >
-        {H_OPTIONS.map((h) => <option key={h} value={h}>{pad2(h)}</option>)}
-      </Select>
-    </div>
-
-    <div>
-      <FieldLabel>終了(分)</FieldLabel>
-      <Select
-        className="w-20"
-        value={newTask.eM}
-        onChange={(e) => setNewTask((v) => ({ ...v, eM: parseInt(e.target.value, 10) }))}
-      >
-        {M_OPTIONS.map((m) => <option key={m} value={m}>{pad2(m)}</option>)}
-      </Select>
-    </div>
-  </div>
-
-  {/* Googleカレンダー登録チェック */}
-  <div className="col-span-12">
-    <label className="inline-flex items-center gap-2 select-none">
-      <input
-        id="addToGoogleCal"
-        type="checkbox"
-        className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-200"
-        checked={addToGoogleCalendar}
-        onChange={(e) => setAddToGoogleCalendar(e.target.checked)}
-      />
-      <span className="text-sm text-slate-700">Googleカレンダーにも登録</span>
-    </label>
-  </div>
-
-  {/* 追加ボタン */}
-  <div className="col-span-12 md:col-span-2 md:col-start-11">
-    <Button className="w-full" onClick={addTask}>追加</Button>
-  </div>
-</div>
-
+            {/* 追加ボタン */}
+            <div className="col-span-12 md:col-span-2 md:col-start-11">
+              <Button className="w-full" onClick={addTask}>追加</Button>
+            </div>
+          </div>
         </div>
 
         {/* 一覧 */}
@@ -763,7 +723,8 @@ export default function App() {
                   <th className="p-3 font-semibold w-32">実績</th>
                   <th className="p-3 font-semibold w-36">ステータス</th>
                   <th className="p-3 font-semibold">振り返り</th>
-                  <th className="p-3 font-semibold w-16 text-right">操作</th>
+                  {/* 操作タイトルは空（列は維持） */}
+                  <th className="p-3 w-16 text-right"></th>
                 </tr>
               </thead>
               <tbody>
@@ -779,16 +740,11 @@ export default function App() {
                         const canEdit = canEditTask(row);
                         const planned = displayPlanned(row);
                         return (
-                          <tr
-                            key={row.id}
-                            className="border-b border-slate-200/70 hover:bg-slate-50/50 transition"
-                          >
+                          <tr key={row.id} className="border-b border-slate-200/70 hover:bg-slate-50/50 transition">
                             <td className="p-3 align-top">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5">{row.name}</div>
                             </td>
-                            <td className="p-3 align-top">
-                              <CategoryPill value={row.category} />
-                            </td>
+                            <td className="p-3 align-top"><CategoryPill value={row.category} /></td>
                             <td className="p-3 align-top w-24">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.startTime ?? "—"}</div>
                             </td>
@@ -830,16 +786,18 @@ export default function App() {
                                 onSave={(val) => updateTask(row.id, { retrospective: val })}
                               />
                             </td>
+                            {/* 削除：「×」アイコン */}
                             <td className="p-3 align-top w-16 text-right">
                               {canEdit ? (
                                 <button
-                                  className="text-rose-600 hover:text-rose-700 hover:underline"
+                                  className="text-slate-400 hover:text-rose-600 hover:scale-110 transition-transform"
                                   onClick={() => deleteTask(row.id)}
                                   title="削除"
+                                  aria-label="削除"
                                 >
-                                  削除
+                                  ×
                                 </button>
-                              ) : <span className="text-slate-400">-</span>}
+                              ) : <span className="text-slate-300">—</span>}
                             </td>
                           </tr>
                         );
@@ -853,7 +811,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-slate-500 mt-6">
-          v3.1.0 – モダンUIリフレッシュ（ガラス/グラデ/ピル/カード）。機能は従来通り、Googleカレンダー連携はチェックでON。
+          v3.2.0 – モダンUI・操作列タイトル非表示／削除は「×」アイコン。
         </p>
       </main>
     </div>
