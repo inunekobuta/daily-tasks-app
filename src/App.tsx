@@ -3,11 +3,10 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
- * v3.3.0
- * - 担当者を選択して登録（自分以外もOK / その他で直接入力）
- * - 完了条件（複数行）を追加フォームに追加し、DB保存
- * - DnDで並び替え（同一日・同一メンバー、所有者のみ可）。sort_order で永続化
- * - 既存のUI/色指定/ヘッダー中央/実績右寄せは維持
+ * v3.4.0
+ * - 一覧テーブルを横スクロール可能（min-w 固定 + table-fixed）
+ * - 各カラム幅を広めに再設定
+ * - 既存機能はすべて維持（担当者/完了条件/DnD/色など）
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -35,8 +34,8 @@ type Task = {
   retrospective?: string;
   startTime?: string | null; // "HH:MM"
   endTime?: string | null;   // "HH:MM"
-  doneCondition?: string;    // 追加：完了条件
-  sortOrder?: number | null; // 追加：並び順
+  doneCondition?: string;    // 完了条件
+  sortOrder?: number | null; // 並び順
 };
 
 type CloudUser = { id: string; email: string; displayName: string };
@@ -90,7 +89,7 @@ function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLBut
   );
 }
 function CategoryPill({ value }: { value: Category }) {
-  // 高さは他セルと揃える（h-10=40px）
+  // 他セルと高さ揃え（h-10=40px）
   const base = "w-full h-10 flex items-center justify-center rounded-xl border text-sm font-medium";
   const map: Record<Category, string> = {
     "広告運用": `${base} bg-indigo-50 text-indigo-700 border-indigo-200`,
@@ -409,7 +408,7 @@ export default function App() {
   const [memberFilter, setMemberFilter] = useState<string>("all");
   const [addToGoogleCalendar, setAddToGoogleCalendar] = useState<boolean>(false);
 
-  // 追加：担当者UI用
+  // 追加：担当者UI切替
   const [assigneeMode, setAssigneeMode] = useState<"select" | "custom">("select");
 
   // セッション復元 + 監視
@@ -465,11 +464,10 @@ export default function App() {
   // 表示計算
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
 
-  // 既知メンバー候補（担当者候補）
+  // 既知メンバー候補
   const memberOptions = useMemo(() => {
     const set = new Set<string>();
     for (const t of tasksAll) if (t.member?.trim()) set.add(t.member.trim());
-    // 自分を先頭に
     const arr = Array.from(set).sort();
     const my = user?.displayName || "";
     if (my && !arr.includes(my)) arr.unshift(my);
@@ -519,8 +517,8 @@ export default function App() {
     category: Category;
     sH: number; sM: number;
     eH: number; eM: number;
-    member: string;           // 追加：担当者
-    doneCondition: string;    // 追加：完了条件
+    member: string;           // 担当者
+    doneCondition: string;    // 完了条件
   }>({
     name: "",
     category: CATEGORIES[0],
@@ -546,7 +544,7 @@ export default function App() {
 
     const planned = diffHoursFromTimes(startTime, endTime) ?? 0;
 
-    // 並び順：既存グループの最大+10
+    // 並び順：同グループの最大+10
     const sameGroup = tasksAll
       .filter(t => t.date === date && t.member === newTask.member && t.ownerId === user.id);
     const maxOrder = sameGroup.reduce((m, t) => Math.max(m, t.sortOrder ?? 0), 0);
@@ -630,20 +628,15 @@ export default function App() {
 
   // ---------- Drag & Drop ----------
   const draggingId = useRef<string | null>(null);
-
-  function handleDragStart(id: string) {
-    draggingId.current = id;
-  }
-  function handleDragOver(e: React.DragEvent) {
-    e.preventDefault(); // dropを許可
-  }
+  function handleDragStart(id: string) { draggingId.current = id; }
+  function handleDragOver(e: React.DragEvent) { e.preventDefault(); }
   async function handleDrop(targetRow: Task) {
     const dragId = draggingId.current;
     draggingId.current = null;
     if (!dragId || !user) return;
     if (dragId === targetRow.id) return;
 
-    // どちらも同じ日・同じメンバーで、自分の所有タスクのみ並び替え可
+    // 同日・同メンバー・自分のタスクのみ並び替え
     const allByGroup = tasksAll
       .filter(t => t.date === targetRow.date && t.member === targetRow.member && t.ownerId === user.id)
       .sort((a, b) => {
@@ -661,11 +654,10 @@ export default function App() {
     const [moved] = next.splice(fromIdx, 1);
     next.splice(toIdx, 0, moved);
 
-    // 新しい sort_order を10刻みで再採番
+    // 10刻みで採番し直し
     const updates = next.map((t, i) => ({ id: t.id, sortOrder: (i + 1) * 10 }));
 
     try {
-      // 逐次更新（列が無い場合はフォールバックで無視される）
       for (const u of updates) {
         await cloudUpdateTask(u.id, user.id, { sortOrder: u.sortOrder });
       }
@@ -789,15 +781,7 @@ export default function App() {
                     onChange={(e) => setNewTask((s) => ({ ...s, member: e.target.value }))}
                   />
                   <Button type="button" className="bg-white text-slate-700 border border-slate-200"
-                    onClick={() => {
-                      // 入力が既存と被る場合はselectに戻す
-                      if (memberOptions.includes(newTask.member)) {
-                        setAssigneeMode("select");
-                      } else {
-                        // カスタムのままでもOK
-                        setAssigneeMode("select");
-                      }
-                    }}>
+                    onClick={() => setAssigneeMode("select")}>
                     OK
                   </Button>
                 </div>
@@ -859,7 +843,7 @@ export default function App() {
               />
             </div>
 
-            {/* Googleカレンダー登録チェック（ボタンの直上） */}
+            {/* Googleカレンダー登録チェック */}
             <div className="col-span-12">
               <label className="inline-flex items-center gap-2 select-none">
                 <input
@@ -880,7 +864,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* 一覧 */}
+        {/* 一覧（横スクロール対応） */}
         <div className="rounded-3xl border border-slate-200/70 bg-white/80 backdrop-blur-xl shadow-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-200/70 flex items-center justify-between">
             <h2 className="text-base font-semibold">タスク一覧（{date}）</h2>
@@ -891,20 +875,20 @@ export default function App() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
+            {/* ★ 横スクロール用：最小幅を広げる */}
+            <table className="min-w-[1200px] text-sm table-fixed">
               <thead>
-                {/* ヘッダーは全て中央揃え */}
-                <tr className="bg-slate-50/80 text-left border-b border-slate-200/70 text-slate-600">
-                  <th className="p-3 font-semibold text-center">タスク名</th>
-                  <th className="p-3 font-semibold text-center">カテゴリ</th>
-                  <th className="p-3 font-semibold w-24 text-center">開始</th>
-                  <th className="p-3 font-semibold w-24 text-center">終了</th>
-                  <th className="p-3 font-semibold w-28 text-center">工数(予定)</th>
-                  <th className="p-3 font-semibold w-32 text-center">実績</th>
-                  <th className="p-3 font-semibold w-36 text-center">ステータス</th>
-                  <th className="p-3 font-semibold text-center">振り返り</th>
-                  {/* 操作タイトルは空（列は維持） */}
-                  <th className="p-3 w-16 text-center"></th>
+                {/* ヘッダーは全て中央揃え＆幅広め */}
+                <tr className="bg-slate-50/80 border-b border-slate-200/70 text-slate-600">
+                  <th className="p-3 font-semibold text-center w-56">タスク名</th>
+                  <th className="p-3 font-semibold text-center w-40">カテゴリ</th>
+                  <th className="p-3 font-semibold text-center w-28">開始</th>
+                  <th className="p-3 font-semibold text-center w-28">終了</th>
+                  <th className="p-3 font-semibold text-center w-36">工数(予定)</th>
+                  <th className="p-3 font-semibold text-center w-36">実績</th>
+                  <th className="p-3 font-semibold text-center w-40">ステータス</th>
+                  <th className="p-3 font-semibold text-center w-64">振り返り</th>
+                  <th className="p-3 font-semibold text-center w-16"></th>
                 </tr>
               </thead>
               <tbody onDragOver={handleDragOver}>
@@ -923,32 +907,38 @@ export default function App() {
                           <tr
                             key={row.id}
                             className="border-b border-slate-200/70 hover:bg-slate-50/50 transition"
-                            draggable={canEdit}                           // 所有者のみ並び替え可能
+                            draggable={canEdit}
                             onDragStart={() => handleDragStart(row.id)}
                             onDrop={() => handleDrop(row)}
                           >
-                            <td className="p-3 align-top">
-                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5">{row.name}</div>
+                            <td className="p-3 align-top w-56">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5">
+                                {row.name}
+                              </div>
                             </td>
-                            <td className="p-3 align-top text-center">
+                            <td className="p-3 align-top w-40 text-center">
                               <CategoryPill value={row.category} />
                             </td>
-                            <td className="p-3 align-top w-24 text-center">
-                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.startTime ?? "—"}</div>
+                            <td className="p-3 align-top w-28 text-center">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">
+                                {row.startTime ?? "—"}
+                              </div>
                             </td>
-                            <td className="p-3 align-top w-24 text-center">
-                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">{row.endTime ?? "—"}</div>
+                            <td className="p-3 align-top w-28 text-center">
+                              <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-center">
+                                {row.endTime ?? "—"}
+                              </div>
                             </td>
-                            <td className="p-3 align-top w-28">
+                            <td className="p-3 align-top w-36">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-right font-medium">
                                 {planned.toFixed(2)}
                               </div>
                             </td>
-                            <td className="p-3 align-top w-32">
+                            <td className="p-3 align-top w-36">
                               {canEdit ? (
                                 <Input
                                   type="number" min={0} step={0.25}
-                                  className="text-right"  // 実績は右揃え
+                                  className="w-full text-right"
                                   value={row.actualHours}
                                   onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) })}
                                 />
@@ -958,7 +948,7 @@ export default function App() {
                                 </div>
                               )}
                             </td>
-                            <td className="p-3 align-top w-36 text-center">
+                            <td className="p-3 align-top w-40 text-center">
                               {canEdit ? (
                                 <Select
                                   value={row.status}
@@ -970,14 +960,13 @@ export default function App() {
                                 <StatusPill value={row.status} />
                               )}
                             </td>
-                            <td className="p-3 align-top">
+                            <td className="p-3 align-top w-64">
                               <RetrospectiveCell
                                 initial={row.retrospective ?? ""}
                                 canEdit={canEdit}
                                 onSave={(val) => updateTask(row.id, { retrospective: val })}
                               />
                             </td>
-                            {/* 削除：「×」アイコン（右側） */}
                             <td className="p-3 align-top w-16 text-center">
                               {canEdit ? (
                                 <button
@@ -1002,7 +991,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-slate-500 mt-6">
-          v3.3.0 – 担当者選択、完了条件、DnD並び替え（所有者のみ、同日・同メンバー内）。
+          v3.4.0 – 横スクロール対応（min-w:1200px / table-fixed）＋カラム幅拡張。
         </p>
       </main>
     </div>
