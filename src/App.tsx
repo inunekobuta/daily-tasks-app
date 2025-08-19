@@ -3,10 +3,10 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
- * v3.4.0
- * - 一覧テーブルを横スクロール可能（min-w 固定 + table-fixed）
- * - 各カラム幅を広めに再設定
- * - 既存機能はすべて維持（担当者/完了条件/DnD/色など）
+ * v3.5.0
+ * - 一覧に「完了条件」列を追加（編集可能）
+ * - IME安全なエディタ DoneConditionCell を実装
+ * - 横スクロール最小幅を拡張（追加列に対応）
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -102,7 +102,6 @@ function CategoryPill({ value }: { value: Category }) {
 }
 function StatusPill({ value }: { value: Status }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
-  // 色指定（未着手=赤 / 仕掛中=黄 / 完了=緑）
   const map: Record<Status, string> = {
     "未着手": `${base} bg-rose-100 text-rose-700 border border-rose-200`,
     "仕掛中": `${base} bg-amber-100 text-amber-700 border border-amber-200`,
@@ -354,12 +353,55 @@ function CloudLogin({ onLoggedIn }: { onLoggedIn: (u: CloudUser) => void }) {
   );
 }
 
-/* ---------- 振り返りセル（IME対応） ---------- */
+/* ---------- IME-safe editors ---------- */
 function RetrospectiveCell({
   initial,
   canEdit,
   onSave,
   placeholder = "今日の気づき/改善点など",
+  debounceMs = 600,
+}: {
+  initial: string;
+  canEdit: boolean;
+  onSave: (value: string) => void | Promise<void>;
+  placeholder?: string;
+  debounceMs?: number;
+}) {
+  const [text, setText] = useState(initial ?? "");
+  const composingRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => { if (!composingRef.current) setText(initial ?? ""); }, [initial]);
+  useEffect(() => () => { if (timerRef.current) window.clearTimeout(timerRef.current); }, []);
+
+  const scheduleSave = (next: string) => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => { onSave(next); }, debounceMs);
+  };
+
+  if (!canEdit) {
+    return <div className="w-full min-h-[2.5rem] whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">{(text ?? "").trim() || "—"}</div>;
+  }
+
+  return (
+    <textarea
+      rows={2}
+      className="w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition"
+      placeholder={placeholder}
+      value={text}
+      onChange={(e) => { const next = e.target.value; setText(next); if (!composingRef.current) scheduleSave(next); }}
+      onCompositionStart={() => { composingRef.current = true; if (timerRef.current) window.clearTimeout(timerRef.current); }}
+      onCompositionEnd={(e) => { composingRef.current = false; const next = (e.target as HTMLTextAreaElement).value; setText(next); scheduleSave(next); }}
+      onBlur={(e) => { if (!composingRef.current) { if (timerRef.current) window.clearTimeout(timerRef.current); onSave(e.currentTarget.value); } }}
+    />
+  );
+}
+
+function DoneConditionCell({
+  initial,
+  canEdit,
+  onSave,
+  placeholder = "完了の判断基準（例：◯◯の承認取得まで）",
   debounceMs = 600,
 }: {
   initial: string;
@@ -532,7 +574,7 @@ export default function App() {
     if (user && !newTask.member) {
       setNewTask((v) => ({ ...v, member: user.displayName }));
     }
-  }, [user]);
+  }, [user]); // eslint-disable-line
 
   // 追加
   async function addTask() {
@@ -875,8 +917,8 @@ export default function App() {
           </div>
 
           <div className="overflow-x-auto">
-            {/* ★ 横スクロール用：最小幅を広げる */}
-            <table className="min-w-[1200px] text-sm table-fixed">
+            {/* 追加列に合わせ最小幅を拡張 */}
+            <table className="min-w-[1500px] text-sm table-fixed">
               <thead>
                 {/* ヘッダーは全て中央揃え＆幅広め */}
                 <tr className="bg-slate-50/80 border-b border-slate-200/70 text-slate-600">
@@ -887,18 +929,19 @@ export default function App() {
                   <th className="p-3 font-semibold text-center w-36">工数(予定)</th>
                   <th className="p-3 font-semibold text-center w-36">実績</th>
                   <th className="p-3 font-semibold text-center w-40">ステータス</th>
+                  <th className="p-3 font-semibold text-center w-64">完了条件</th>
                   <th className="p-3 font-semibold text-center w-64">振り返り</th>
                   <th className="p-3 font-semibold text-center w-16"></th>
                 </tr>
               </thead>
               <tbody onDragOver={handleDragOver}>
                 {grouped.length === 0 ? (
-                  <tr><td className="p-6 text-slate-500" colSpan={9}>該当タスクがありません。</td></tr>
+                  <tr><td className="p-6 text-slate-500" colSpan={10}>該当タスクがありません。</td></tr>
                 ) : (
                   grouped.flatMap(([member, rows]) => {
                     return [
                       <tr key={`header-${member}`} className="bg-slate-50/60 border-y border-slate-200/70">
-                        <td className="p-3 font-semibold text-slate-700" colSpan={9}>👤 {member}</td>
+                        <td className="p-3 font-semibold text-slate-700" colSpan={10}>👤 {member}</td>
                       </tr>,
                       ...rows.map((row) => {
                         const canEdit = canEditTask(row);
@@ -960,6 +1003,16 @@ export default function App() {
                                 <StatusPill value={row.status} />
                               )}
                             </td>
+                            {/* 完了条件（編集可） */}
+                            <td className="p-3 align-top w-64">
+                              <DoneConditionCell
+                                initial={row.doneCondition ?? ""}
+                                canEdit={canEdit}
+                                onSave={(val) => updateTask(row.id, { doneCondition: val })}
+                                placeholder="完了の判断基準を記入"
+                              />
+                            </td>
+                            {/* 振り返り（編集可） */}
                             <td className="p-3 align-top w-64">
                               <RetrospectiveCell
                                 initial={row.retrospective ?? ""}
@@ -991,7 +1044,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-slate-500 mt-6">
-          v3.4.0 – 横スクロール対応（min-w:1200px / table-fixed）＋カラム幅拡張。
+          v3.5.0 – 完了条件の一覧編集対応 / 横スクロール拡張。
         </p>
       </main>
     </div>
