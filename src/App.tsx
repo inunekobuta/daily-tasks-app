@@ -116,7 +116,18 @@ function noSuchColumn(err: any, col: string) {
   return msg.includes(col.toLowerCase()) && (msg.includes("does not exist") || msg.includes("column"));
 }
 function logErr(where: string, err: any) {
-  console.error(`[${where}]`, { message: err?.message, details: err?.details, hint: err?.hint, code: err?.code, err });
+  const payload = {
+    where,
+    message: err?.message,
+    details: err?.details,
+    hint: err?.hint,
+    code: err?.code,
+  };
+  console.error(`[${where}]`, payload, err);
+  try {
+    // 開発中だけでOK。邪魔ならコメントアウト可。
+    alert(`[${where}] error\n` + JSON.stringify(payload, null, 2));
+  } catch {}
 }
 
 /* ---------- DB I/O ---------- */
