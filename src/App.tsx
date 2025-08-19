@@ -3,10 +3,11 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
- * v3.2.1
- * - ヘッダー中央揃え
- * - 実績入力の右揃え
- * - ステータス色: 未着手=赤 / 仕掛中=黄 / 完了=緑
+ * v3.3.0
+ * - 担当者を選択して登録（自分以外もOK / その他で直接入力）
+ * - 完了条件（複数行）を追加フォームに追加し、DB保存
+ * - DnDで並び替え（同一日・同一メンバー、所有者のみ可）。sort_order で永続化
+ * - 既存のUI/色指定/ヘッダー中央/実績右寄せは維持
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -34,6 +35,8 @@ type Task = {
   retrospective?: string;
   startTime?: string | null; // "HH:MM"
   endTime?: string | null;   // "HH:MM"
+  doneCondition?: string;    // 追加：完了条件
+  sortOrder?: number | null; // 追加：並び順
 };
 
 type CloudUser = { id: string; email: string; displayName: string };
@@ -41,6 +44,7 @@ type CloudUser = { id: string; email: string; displayName: string };
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const H_OPTIONS = Array.from({ length: 24 }, (_, i) => i);
 const M_OPTIONS = [0, 15, 30, 45];
+const CUSTOM_MEMBER_VALUE = "__CUSTOM_MEMBER__";
 
 /* ---------- UI primitives ---------- */
 function Chip({ children, className = "" }: { children: any; className?: string }) {
@@ -69,6 +73,14 @@ function Select({ className = "", ...props }: React.SelectHTMLAttributes<HTMLSel
     />
   );
 }
+function TextArea({ className = "", ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={`w-full rounded-xl border border-slate-200 bg-white/80 px-3.5 py-2 text-sm outline-none ring-0 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 transition ${className}`}
+      {...props}
+    />
+  );
+}
 function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
@@ -78,12 +90,8 @@ function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLBut
   );
 }
 function CategoryPill({ value }: { value: Category }) {
-  // 他セル（開始/終了/工数）の見た目に合わせて高さを固定（h-10=40px）
-  // 横幅も w-full にして、中央寄せ＋角丸＋枠線を統一
-  const base =
-    "w-full h-10 flex items-center justify-center rounded-xl border text-sm font-medium";
-
-  // 色だけカテゴリごとに分ける（薄色の塗り＋同系色ボーダー）
+  // 高さは他セルと揃える（h-10=40px）
+  const base = "w-full h-10 flex items-center justify-center rounded-xl border text-sm font-medium";
   const map: Record<Category, string> = {
     "広告運用": `${base} bg-indigo-50 text-indigo-700 border-indigo-200`,
     "SEO": `${base} bg-emerald-50 text-emerald-700 border-emerald-200`,
@@ -91,13 +99,11 @@ function CategoryPill({ value }: { value: Category }) {
     "AF": `${base} bg-amber-50 text-amber-700 border-amber-200`,
     "その他": `${base} bg-slate-50 text-slate-700 border-slate-200`,
   };
-
   return <div className={map[value]}>{value}</div>;
 }
-
 function StatusPill({ value }: { value: Status }) {
   const base = "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold";
-  // ★色指定をリクエスト通りに変更
+  // 色指定（未着手=赤 / 仕掛中=黄 / 完了=緑）
   const map: Record<Status, string> = {
     "未着手": `${base} bg-rose-100 text-rose-700 border border-rose-200`,
     "仕掛中": `${base} bg-amber-100 text-amber-700 border border-amber-200`,
@@ -134,15 +140,22 @@ async function cloudInsertTask(t: Omit<Task, "id">, ownerId: string) {
     retrospective: t.retrospective ?? null,
     start_time: t.startTime ?? null,
     end_time: t.endTime ?? null,
+    done_condition: t.doneCondition ?? null,
+    sort_order: t.sortOrder ?? null,
   });
   if (first.error) {
     const payload: any = { ...base };
     if (!noSuchColumn(first.error, "retrospective")) payload.retrospective = t.retrospective ?? null;
     if (!noSuchColumn(first.error, "start_time")) payload.start_time = t.startTime ?? null;
     if (!noSuchColumn(first.error, "end_time")) payload.end_time = t.endTime ?? null;
+    if (!noSuchColumn(first.error, "done_condition")) payload.done_condition = t.doneCondition ?? null;
+    if (!noSuchColumn(first.error, "sort_order")) payload.sort_order = t.sortOrder ?? null;
+
     if (noSuchColumn(first.error, "retrospective")) delete payload.retrospective;
     if (noSuchColumn(first.error, "start_time")) delete payload.start_time;
     if (noSuchColumn(first.error, "end_time")) delete payload.end_time;
+    if (noSuchColumn(first.error, "done_condition")) delete payload.done_condition;
+    if (noSuchColumn(first.error, "sort_order")) delete payload.sort_order;
 
     const retry = await supabase.from("tasks").insert(payload);
     if (retry.error) { logErr("insert(retry)", retry.error); throw retry.error; }
@@ -158,6 +171,8 @@ async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>
     if (p.retrospective !== undefined) o.retrospective = p.retrospective;
     if (p.startTime !== undefined) o.start_time = p.startTime;
     if (p.endTime !== undefined) o.end_time = p.endTime;
+    if (p.doneCondition !== undefined) o.done_condition = p.doneCondition;
+    if (p.sortOrder !== undefined) o.sort_order = p.sortOrder;
     return o;
   };
   const res = await supabase.from("tasks").update(toDb(patch)).eq("id", id).eq("owner_id", ownerId);
@@ -165,12 +180,16 @@ async function cloudUpdateTask(id: string, ownerId: string, patch: Partial<Task>
     const needRetry =
       ("retrospective" in patch && noSuchColumn(res.error, "retrospective")) ||
       ("startTime" in patch && noSuchColumn(res.error, "start_time")) ||
-      ("endTime" in patch && noSuchColumn(res.error, "end_time"));
+      ("endTime" in patch && noSuchColumn(res.error, "end_time")) ||
+      ("doneCondition" in patch && noSuchColumn(res.error, "done_condition")) ||
+      ("sortOrder" in patch && noSuchColumn(res.error, "sort_order"));
     if (needRetry) {
       const p2 = { ...patch } as any;
       if (noSuchColumn(res.error, "retrospective")) delete p2.retrospective;
       if (noSuchColumn(res.error, "start_time")) delete p2.startTime;
       if (noSuchColumn(res.error, "end_time")) delete p2.endTime;
+      if (noSuchColumn(res.error, "done_condition")) delete p2.doneCondition;
+      if (noSuchColumn(res.error, "sort_order")) delete p2.sortOrder;
       const retry = await supabase.from("tasks").update(toDb(p2)).eq("id", id).eq("owner_id", ownerId);
       if (retry.error) { logErr("update(retry)", retry.error); throw retry.error; }
     } else {
@@ -211,6 +230,8 @@ function toTask(r: any): Task {
     retrospective: (r as any).retrospective ?? "",
     startTime: (r as any).start_time ?? null,
     endTime: (r as any).end_time ?? null,
+    doneCondition: (r as any).done_condition ?? "",
+    sortOrder: (r as any).sort_order ?? null,
   };
 }
 
@@ -388,6 +409,9 @@ export default function App() {
   const [memberFilter, setMemberFilter] = useState<string>("all");
   const [addToGoogleCalendar, setAddToGoogleCalendar] = useState<boolean>(false);
 
+  // 追加：担当者UI用
+  const [assigneeMode, setAssigneeMode] = useState<"select" | "custom">("select");
+
   // セッション復元 + 監視
   useEffect(() => {
     (async () => {
@@ -440,17 +464,31 @@ export default function App() {
 
   // 表示計算
   const sourceTasks = viewMode === "all" ? tasksAll : tasksMine;
-  const members = useMemo(() => {
+
+  // 既知メンバー候補（担当者候補）
+  const memberOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const t of tasksAll) set.add(t.member || "-");
-    return ["all", ...Array.from(set).sort()];
-  }, [tasksAll]);
+    for (const t of tasksAll) if (t.member?.trim()) set.add(t.member.trim());
+    // 自分を先頭に
+    const arr = Array.from(set).sort();
+    const my = user?.displayName || "";
+    if (my && !arr.includes(my)) arr.unshift(my);
+    return arr;
+  }, [tasksAll, user?.displayName]);
+
+  const membersFilterList = useMemo(() => ["all", ...memberOptions], [memberOptions]);
+
   const filteredByMember = useMemo(() => {
     if (viewMode !== "all" || memberFilter === "all") return sourceTasks;
     return sourceTasks.filter((t) => (t.member || "-") === memberFilter);
   }, [sourceTasks, viewMode, memberFilter]);
-  const tasksForDay = useMemo(() => filteredByMember.filter((t) => t.date === date), [filteredByMember, date]);
 
+  const tasksForDay = useMemo(
+    () => filteredByMember.filter((t) => t.date === date),
+    [filteredByMember, date]
+  );
+
+  // 並び順：sortOrder→createdAt
   const grouped = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const t of tasksForDay) {
@@ -458,7 +496,14 @@ export default function App() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(t);
     }
-    for (const arr of map.values()) arr.sort((a, b) => a.createdAt - b.createdAt);
+    for (const arr of map.values()) {
+      arr.sort((a, b) => {
+        const sa = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+        const sb = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+        if (sa !== sb) return sa - sb;
+        return a.createdAt - b.createdAt;
+      });
+    }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [tasksForDay]);
 
@@ -474,44 +519,66 @@ export default function App() {
     category: Category;
     sH: number; sM: number;
     eH: number; eM: number;
+    member: string;           // 追加：担当者
+    doneCondition: string;    // 追加：完了条件
   }>({
     name: "",
     category: CATEGORIES[0],
     sH: 9, sM: 0,
     eH: 18, eM: 0,
+    member: "",
+    doneCondition: "",
   });
+
+  useEffect(() => {
+    if (user && !newTask.member) {
+      setNewTask((v) => ({ ...v, member: user.displayName }));
+    }
+  }, [user]);
 
   // 追加
   async function addTask() {
     if (!user) return;
-    const myName = user.displayName;
     const startTime = `${pad2(newTask.sH)}:${pad2(newTask.sM)}`;
     const endTime = `${pad2(newTask.eH)}:${pad2(newTask.eM)}`;
     if (!newTask.name.trim()) return;
+    if (!newTask.member.trim()) return;
 
     const planned = diffHoursFromTimes(startTime, endTime) ?? 0;
 
-    const base = {
+    // 並び順：既存グループの最大+10
+    const sameGroup = tasksAll
+      .filter(t => t.date === date && t.member === newTask.member && t.ownerId === user.id);
+    const maxOrder = sameGroup.reduce((m, t) => Math.max(m, t.sortOrder ?? 0), 0);
+    const nextOrder = (maxOrder || 0) + 10;
+
+    const base: Omit<Task, "id"> = {
       name: newTask.name.trim(),
       category: newTask.category,
       plannedHours: planned,
       actualHours: 0,
-      status: "未着手" as Status,
+      status: "未着手",
       date,
       createdAt: Date.now(),
-      member: myName,
+      member: newTask.member.trim(),
       ownerId: user.id,
       retrospective: "",
       startTime,
       endTime,
+      doneCondition: newTask.doneCondition.trim(),
+      sortOrder: nextOrder,
     };
 
     try {
-      await cloudInsertTask(base as Omit<Task, "id">, user.id);
+      await cloudInsertTask(base, user.id);
 
+      // Googleカレンダー登録（任意）
       if (addToGoogleCalendar) {
         try {
-          await createGoogleCalendarEvent(date, startTime, endTime, base.name, `カテゴリ: ${base.category}`);
+          await createGoogleCalendarEvent(
+            date, startTime, endTime, base.name,
+            `カテゴリ: ${base.category}\n担当: ${base.member}\n完了条件:\n${base.doneCondition || "(未入力)"}`
+          );
         } catch (e) {
           console.error("[google calendar]", e);
           alert("Googleカレンダー登録に失敗しました。権限やログイン状態を確認してください。");
@@ -522,7 +589,9 @@ export default function App() {
       const all = await cloudFetchAll();
       setTasksMine(mine);
       setTasksAll(all);
-      setNewTask((v) => ({ ...v, name: "" }));
+
+      // 入力欄の初期化（担当者は維持）
+      setNewTask((v) => ({ ...v, name: "", doneCondition: "" }));
     } catch (e) {
       console.error("[addTask]", e);
       alert("タスク追加に失敗しました。コンソールのエラーを確認してください。");
@@ -558,6 +627,57 @@ export default function App() {
   }
 
   function logout() { supabase?.auth.signOut(); }
+
+  // ---------- Drag & Drop ----------
+  const draggingId = useRef<string | null>(null);
+
+  function handleDragStart(id: string) {
+    draggingId.current = id;
+  }
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault(); // dropを許可
+  }
+  async function handleDrop(targetRow: Task) {
+    const dragId = draggingId.current;
+    draggingId.current = null;
+    if (!dragId || !user) return;
+    if (dragId === targetRow.id) return;
+
+    // どちらも同じ日・同じメンバーで、自分の所有タスクのみ並び替え可
+    const allByGroup = tasksAll
+      .filter(t => t.date === targetRow.date && t.member === targetRow.member && t.ownerId === user.id)
+      .sort((a, b) => {
+        const sa = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+        const sb = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+        if (sa !== sb) return sa - sb;
+        return a.createdAt - b.createdAt;
+      });
+
+    const fromIdx = allByGroup.findIndex(t => t.id === dragId);
+    const toIdx = allByGroup.findIndex(t => t.id === targetRow.id);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    const next = [...allByGroup];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+
+    // 新しい sort_order を10刻みで再採番
+    const updates = next.map((t, i) => ({ id: t.id, sortOrder: (i + 1) * 10 }));
+
+    try {
+      // 逐次更新（列が無い場合はフォールバックで無視される）
+      for (const u of updates) {
+        await cloudUpdateTask(u.id, user.id, { sortOrder: u.sortOrder });
+      }
+      const mine = await cloudFetchMine(user.id);
+      const all = await cloudFetchAll();
+      setTasksMine(mine);
+      setTasksAll(all);
+    } catch (e) {
+      console.error("[reorder]", e);
+      alert("並び替えの保存に失敗しました。");
+    }
+  }
 
   if (!user) return <CloudLogin onLoggedIn={(u) => setUser(u)} />;
 
@@ -603,7 +723,7 @@ export default function App() {
             <div className="col-span-6 sm:col-span-4 md:col-span-3">
               <FieldLabel>メンバー</FieldLabel>
               <Select value={memberFilter} onChange={(e) => setMemberFilter(e.target.value)}>
-                {members.map((m) => <option key={m} value={m}>{m === "all" ? "すべて" : m}</option>)}
+                {membersFilterList.map((m) => <option key={m} value={m}>{m === "all" ? "すべて" : m}</option>)}
               </Select>
             </div>
           )}
@@ -620,7 +740,7 @@ export default function App() {
         <div className="mb-8 rounded-3xl border border-slate-200/70 bg-white/80 backdrop-blur-xl shadow-xl p-5">
           <h2 className="text-base font-semibold mb-4">タスクを追加（所有者: {myName}）</h2>
 
-          <div className="grid grid-cols-12 gap-4 items-end">
+          <div className="grid grid-cols-12 gap-4 items-start">
             {/* タスク名 */}
             <div className="col-span-12 md:col-span-5">
               <FieldLabel>タスク名</FieldLabel>
@@ -642,8 +762,50 @@ export default function App() {
               </Select>
             </div>
 
+            {/* 担当者 */}
+            <div className="col-span-6 md:col-span-2">
+              <FieldLabel>担当者</FieldLabel>
+              {assigneeMode === "select" ? (
+                <Select
+                  value={memberOptions.includes(newTask.member) ? newTask.member : CUSTOM_MEMBER_VALUE}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === CUSTOM_MEMBER_VALUE) {
+                      setAssigneeMode("custom");
+                      setNewTask((s) => ({ ...s, member: "" }));
+                    } else {
+                      setNewTask((s) => ({ ...s, member: v }));
+                    }
+                  }}
+                >
+                  {memberOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                  <option value={CUSTOM_MEMBER_VALUE}>その他（直接入力）</option>
+                </Select>
+              ) : (
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="担当者名を入力"
+                    value={newTask.member}
+                    onChange={(e) => setNewTask((s) => ({ ...s, member: e.target.value }))}
+                  />
+                  <Button type="button" className="bg-white text-slate-700 border border-slate-200"
+                    onClick={() => {
+                      // 入力が既存と被る場合はselectに戻す
+                      if (memberOptions.includes(newTask.member)) {
+                        setAssigneeMode("select");
+                      } else {
+                        // カスタムのままでもOK
+                        setAssigneeMode("select");
+                      }
+                    }}>
+                    OK
+                  </Button>
+                </div>
+              )}
+            </div>
+
             {/* 時間選択（開始・終了） */}
-            <div className="col-span-6 md:col-span-5 flex flex-wrap gap-3">
+            <div className="col-span-12 md:col-span-3 flex flex-wrap gap-3">
               <div>
                 <FieldLabel>開始(時)</FieldLabel>
                 <Select
@@ -686,6 +848,17 @@ export default function App() {
               </div>
             </div>
 
+            {/* 完了条件（複数行） */}
+            <div className="col-span-12">
+              <FieldLabel>完了条件</FieldLabel>
+              <TextArea
+                rows={3}
+                placeholder="このタスクが完了したと判断できる条件を記入（例：資料のドラフト提出＋レビュー反映まで）"
+                value={newTask.doneCondition}
+                onChange={(e) => setNewTask((v) => ({ ...v, doneCondition: e.target.value }))}
+              />
+            </div>
+
             {/* Googleカレンダー登録チェック（ボタンの直上） */}
             <div className="col-span-12">
               <label className="inline-flex items-center gap-2 select-none">
@@ -720,7 +893,7 @@ export default function App() {
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
-                {/* ★ヘッダーは全て中央揃え */}
+                {/* ヘッダーは全て中央揃え */}
                 <tr className="bg-slate-50/80 text-left border-b border-slate-200/70 text-slate-600">
                   <th className="p-3 font-semibold text-center">タスク名</th>
                   <th className="p-3 font-semibold text-center">カテゴリ</th>
@@ -734,7 +907,7 @@ export default function App() {
                   <th className="p-3 w-16 text-center"></th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody onDragOver={handleDragOver}>
                 {grouped.length === 0 ? (
                   <tr><td className="p-6 text-slate-500" colSpan={9}>該当タスクがありません。</td></tr>
                 ) : (
@@ -747,7 +920,13 @@ export default function App() {
                         const canEdit = canEditTask(row);
                         const planned = displayPlanned(row);
                         return (
-                          <tr key={row.id} className="border-b border-slate-200/70 hover:bg-slate-50/50 transition">
+                          <tr
+                            key={row.id}
+                            className="border-b border-slate-200/70 hover:bg-slate-50/50 transition"
+                            draggable={canEdit}                           // 所有者のみ並び替え可能
+                            onDragStart={() => handleDragStart(row.id)}
+                            onDrop={() => handleDrop(row)}
+                          >
                             <td className="p-3 align-top">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5">{row.name}</div>
                             </td>
@@ -769,7 +948,7 @@ export default function App() {
                               {canEdit ? (
                                 <Input
                                   type="number" min={0} step={0.25}
-                                  className="text-right"  // ★実績は右揃え
+                                  className="text-right"  // 実績は右揃え
                                   value={row.actualHours}
                                   onChange={(e) => updateTask(row.id, { actualHours: Number(e.target.value) })}
                                 />
@@ -823,7 +1002,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-slate-500 mt-6">
-          v3.2.1 – ヘッダー中央揃え / 実績右揃え / ステータス色（赤・黄・緑）。
+          v3.3.0 – 担当者選択、完了条件、DnD並び替え（所有者のみ、同日・同メンバー内）。
         </p>
       </main>
     </div>
