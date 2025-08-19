@@ -3,10 +3,10 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * 1日のタスク管理ツール（Googleログイン専用 / モダンUI）
- * v3.5.0
- * - 一覧に「完了条件」列を追加（編集可能）
- * - IME安全なエディタ DoneConditionCell を実装
- * - 横スクロール最小幅を拡張（追加列に対応）
+ * v3.6.0
+ * - Googleカレンダー登録時の説明に「完了条件」を常に含める（未入力でも明示）
+ * - 一覧の「工数(予定)」「実績」の幅を「開始」と同じ w-28 に統一
+ * - 既存機能維持：担当者/完了条件/IME安全編集/DnD/色/横スクロール/Google連携
  */
 
 const SUPABASE_URL: string = (import.meta as any)?.env?.VITE_SUPABASE_URL || "";
@@ -284,6 +284,7 @@ async function createGoogleCalendarEvent(
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       summary: title,
+      // ★ 完了条件を常に含める（未入力なら明記）
       description,
       start: { dateTime: start.toISOString(), timeZone },
       end: { dateTime: end.toISOString(), timeZone },
@@ -615,10 +616,13 @@ export default function App() {
       // Googleカレンダー登録（任意）
       if (addToGoogleCalendar) {
         try {
-          await createGoogleCalendarEvent(
-            date, startTime, endTime, base.name,
-            `カテゴリ: ${base.category}\n担当: ${base.member}\n完了条件:\n${base.doneCondition || "(未入力)"}`
-          );
+          // ★ 完了条件は常に説明に含める（空でも "(未入力)"）
+          const desc =
+            `カテゴリ: ${base.category}\n` +
+            `担当: ${base.member}\n` +
+            `完了条件:\n${(base.doneCondition && base.doneCondition.trim()) ? base.doneCondition.trim() : "(未入力)"}`;
+
+            await createGoogleCalendarEvent(date, startTime, endTime, base.name, desc);
         } catch (e) {
           console.error("[google calendar]", e);
           alert("Googleカレンダー登録に失敗しました。権限やログイン状態を確認してください。");
@@ -926,8 +930,9 @@ export default function App() {
                   <th className="p-3 font-semibold text-center w-40">カテゴリ</th>
                   <th className="p-3 font-semibold text-center w-28">開始</th>
                   <th className="p-3 font-semibold text-center w-28">終了</th>
-                  <th className="p-3 font-semibold text-center w-36">工数(予定)</th>
-                  <th className="p-3 font-semibold text-center w-36">実績</th>
+                  {/* ★ 工数(予定) と 実績 を開始と同じ w-28 に */}
+                  <th className="p-3 font-semibold text-center w-28">工数(予定)</th>
+                  <th className="p-3 font-semibold text-center w-28">実績</th>
                   <th className="p-3 font-semibold text-center w-40">ステータス</th>
                   <th className="p-3 font-semibold text-center w-64">完了条件</th>
                   <th className="p-3 font-semibold text-center w-64">振り返り</th>
@@ -972,12 +977,14 @@ export default function App() {
                                 {row.endTime ?? "—"}
                               </div>
                             </td>
-                            <td className="p-3 align-top w-36">
+                            {/* ★ 工数(予定) を w-28 に */}
+                            <td className="p-3 align-top w-28">
                               <div className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-right font-medium">
                                 {planned.toFixed(2)}
                               </div>
                             </td>
-                            <td className="p-3 align-top w-36">
+                            {/* ★ 実績 も w-28 に */}
+                            <td className="p-3 align-top w-28">
                               {canEdit ? (
                                 <Input
                                   type="number" min={0} step={0.25}
@@ -1044,7 +1051,7 @@ export default function App() {
         </div>
 
         <p className="text-xs text-slate-500 mt-6">
-          v3.5.0 – 完了条件の一覧編集対応 / 横スクロール拡張。
+          v3.6.0 – カレンダー説明に完了条件を常時含める / 工数(予定)・実績の列幅を w-28 に統一。
         </p>
       </main>
     </div>
