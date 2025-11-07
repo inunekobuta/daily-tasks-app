@@ -19,6 +19,15 @@ const STATUS = ["未着手", "仕掛中", "完了"] as const;
 
 type Category = typeof CATEGORIES[number];
 type Status = typeof STATUS[number];
+type PerformanceEntry = {
+  subject: string;
+  amount: string;
+  occurredOn: string;
+};
+type PerformanceFormState = {
+  revenue: PerformanceEntry;
+  cost: PerformanceEntry;
+};
 
 type Task = {
   id: string;
@@ -86,6 +95,61 @@ function Button({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLBut
       className={`inline-flex items-center justify-center rounded-xl bg-slate-900 text-white px-4 py-2.5 text-sm font-semibold shadow-sm hover:opacity-95 active:opacity-90 focus:outline-none focus:ring-4 focus:ring-slate-200 transition ${className}`}
       {...props}
     />
+  );
+}
+function PerformanceEntryCard({
+  title,
+  description,
+  placeholder,
+  entry,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  placeholder: string;
+  entry: PerformanceEntry;
+  onChange: (next: PerformanceEntry) => void;
+}) {
+  return (
+    <div className="rounded-3xl border border-slate-200/70 bg-white/80 backdrop-blur-xl shadow-xl p-6">
+      <div className="mb-6">
+        <h2 className="text-lg font-semibold">{title}</h2>
+        <p className="text-sm text-slate-500">{description}</p>
+      </div>
+      <div className="grid grid-cols-12 gap-4">
+        <div className="col-span-12 md:col-span-6 lg:col-span-4">
+          <FieldLabel>科目</FieldLabel>
+          <Input
+            placeholder={placeholder}
+            value={entry.subject}
+            onChange={(e) => onChange({ ...entry, subject: e.target.value })}
+          />
+        </div>
+        <div className="col-span-12 md:col-span-6 lg:col-span-4">
+          <FieldLabel>金額 (税込)</FieldLabel>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">¥</span>
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              className="pl-8"
+              placeholder="金額を入力"
+              value={entry.amount}
+              onChange={(e) => onChange({ ...entry, amount: e.target.value })}
+            />
+          </div>
+        </div>
+        <div className="col-span-12 md:col-span-6 lg:col-span-4">
+          <FieldLabel>発生日</FieldLabel>
+          <Input
+            type="date"
+            value={entry.occurredOn}
+            onChange={(e) => onChange({ ...entry, occurredOn: e.target.value })}
+          />
+        </div>
+      </div>
+    </div>
   );
 }
 function CategoryPill({ value }: { value: Category }) {
@@ -459,11 +523,17 @@ export default function App() {
   const [tasksMine, setTasksMine] = useState<Task[]>([]);
   const [tasksAll, setTasksAll] = useState<Task[]>([]);
   const [viewMode, setViewMode] = useState<"mine" | "all">("mine");
+  const [activePage, setActivePage] = useState<"tasks" | "performance">("tasks");
   const [memberFilter, setMemberFilter] = useState<string>("all");
   const [addToGoogleCalendar, setAddToGoogleCalendar] = useState<boolean>(false);
 
   // 追加：担当者UI切替
   const [assigneeMode, setAssigneeMode] = useState<"select" | "custom">("select");
+
+  const [performanceForm, setPerformanceForm] = useState<PerformanceFormState>({
+    revenue: { subject: "", amount: "", occurredOn: todayStr() },
+    cost: { subject: "", amount: "", occurredOn: todayStr() },
+  });
 
   // セッション復元 + 監視
   useEffect(() => {
@@ -731,6 +801,7 @@ export default function App() {
   if (!user) return <CloudLogin onLoggedIn={(u) => setUser(u)} />;
 
   const myName = user.displayName;
+  const pageTitle = activePage === "tasks" ? "1日のタスク管理" : "業績管理";
   const canEditTask = (t: Task) => t.ownerId === user.id;
 
   return (
@@ -741,11 +812,17 @@ export default function App() {
           <div className="flex items-center gap-3">
             <div className="h-9 w-9 rounded-2xl bg-slate-900 shadow-sm" />
             <div>
-              <h1 className="text-lg sm:text-xl font-bold tracking-tight">1日のタスク管理</h1>
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight">{pageTitle}</h1>
               <p className="text-xs text-slate-500 -mt-0.5">Google連携・クラウド同期</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Button
+              className="bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
+              onClick={() => setActivePage((prev) => (prev === "tasks" ? "performance" : "tasks"))}
+            >
+              {activePage === "tasks" ? "業績管理へ" : "タスク管理へ"}
+            </Button>
             <Chip className="bg-white/70 border-slate-200 text-slate-700 shadow-sm">{myName}</Chip>
             <Button className="bg-white text-slate-700 border border-slate-200 hover:bg-slate-50" onClick={logout}>
               ログアウト
@@ -755,6 +832,8 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-8">
+        {activePage === "tasks" ? (
+          <>
         {/* フィルタ */}
         <div className="mb-6 grid grid-cols-12 gap-4">
           <div className="col-span-12 sm:col-span-4 md:col-span-3">
@@ -1064,6 +1143,36 @@ export default function App() {
         <p className="text-xs text-slate-500 mt-6">
           v3.6.0 – カレンダー説明に完了条件を常時含める / 工数(予定)・実績の列幅を w-28 に統一。
         </p>
+          </>
+        ) : (
+          <section className="space-y-8">
+            <PerformanceEntryCard
+              title="売上の記録"
+              description="売上に関する科目・金額・発生日を入力します。"
+              placeholder="例: サービス利用料"
+              entry={performanceForm.revenue}
+              onChange={(next) =>
+                setPerformanceForm((prev) => ({
+                  ...prev,
+                  revenue: next,
+                }))
+              }
+            />
+
+            <PerformanceEntryCard
+              title="コストの記録"
+              description="支出やコストの科目・金額・発生日を入力します。"
+              placeholder="例: 広告費"
+              entry={performanceForm.cost}
+              onChange={(next) =>
+                setPerformanceForm((prev) => ({
+                  ...prev,
+                  cost: next,
+                }))
+              }
+            />
+          </section>
+        )}
       </main>
     </div>
   );
