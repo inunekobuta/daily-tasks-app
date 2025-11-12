@@ -141,14 +141,17 @@ export default function PerformanceManagement({ supabase, userId }: Props) {
     let mounted = true;
     setLoading(true);
     setError(null);
-    supabase
-      .from("performance_entries")
-      .select("*")
-      .eq("owner_id", userId)
-      .order("occurred_on", { ascending: false })
-      .order("created_at", { ascending: false })
-      .then(({ data, error }) => {
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("performance_entries")
+          .select("*")
+          .eq("owner_id", userId)
+          .order("occurred_on", { ascending: false })
+          .order("created_at", { ascending: false });
+
         if (!mounted) return;
+
         if (error) {
           console.error("[performance_entries] fetch", error);
           setError("業績データの取得に失敗しました。");
@@ -156,10 +159,15 @@ export default function PerformanceManagement({ supabase, userId }: Props) {
         } else {
           setRecords((data || []).map(toRecord));
         }
-      })
-      .finally(() => {
+      } catch (fetchError) {
+        if (!mounted) return;
+        console.error("[performance_entries] fetch", fetchError);
+        setError("業績データの取得に失敗しました。");
+        setRecords([]);
+      } finally {
         if (mounted) setLoading(false);
-      });
+      }
+    })();
     return () => {
       mounted = false;
     };
